@@ -1,8 +1,4 @@
-use crate::engine::Engine;
-
-mod engine;
-mod state;
-mod vertex;
+use ray_tracer::engine::Engine;
 
 fn main() {
     let engine = Engine::setup();
