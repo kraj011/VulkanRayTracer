@@ -205,13 +205,19 @@ impl Engine {
 
         let vertices = vec![
             vertex::MyVertex {
-                position: [-0.5, -0.5],
+                position: [-0.5, -0.5, 0.0],
+                normal: [0.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
             },
             vertex::MyVertex {
-                position: [0.5, -0.25],
+                position: [0.5, -0.25, 0.0],
+                normal: [0.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
             },
             vertex::MyVertex {
-                position: [0.0, 0.5],
+                position: [0.0, 0.5, 0.0],
+                normal: [0.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
             },
         ];
         let vertex_buffer = Buffer::from_iter(
@@ -678,13 +684,19 @@ impl Engine {
     pub fn test_graphics(self) {
         let vertices = vec![
             vertex::MyVertex {
-                position: [-0.5, -0.5],
+                position: [-0.5, -0.5, 0.0],
+                normal: [0.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
             },
             vertex::MyVertex {
-                position: [0.5, -0.25],
+                position: [0.5, -0.25, 0.0],
+                normal: [0.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
             },
             vertex::MyVertex {
-                position: [0.0, 0.5],
+                position: [0.0, 0.5, 0.0],
+                normal: [0.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
             },
         ];
         let vertex_buffer = Buffer::from_iter(

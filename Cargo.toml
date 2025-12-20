@@ -8,6 +8,10 @@ vulkano = "0.34.0"
 vulkano-shaders = "0.34.0"
 image = "0.24"
 winit = "0.28.0"
+bytemuck = { version = "1.14", features = ["derive"] }
+cgmath = "0.18.0"
+rand = "0.9.1"
+openusd = "0.1.4"
 
 [profile.dev]
 opt-level = 1 
