@@ -20,7 +20,7 @@ impl Camera {
         let aspect = self.width as f32 / self.height as f32;
         let fov = 2.0 * (self.sensor_y / (2.0 * self.focal_len)).atan();
 
-        let mut proj = glam::Mat4::perspective_rh(fov, aspect, 0.1, 1000.0);
+        let mut proj = glam::Mat4::perspective_rh(fov, aspect, 0.1, 5000.0);
         proj.y_axis.y *= -1.0;
         proj
     }

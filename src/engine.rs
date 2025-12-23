@@ -33,7 +33,7 @@ use vulkano::{
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
             input_assembly::InputAssemblyState,
             multisample::MultisampleState,
-            rasterization::RasterizationState,
+            rasterization::{CullMode, RasterizationState},
             vertex_input::{Vertex, VertexDefinition},
             viewport::{Viewport, ViewportState},
         },
@@ -316,7 +316,10 @@ impl Engine {
                     viewports: [viewport].into_iter().collect(),
                     ..Default::default()
                 }),
-                rasterization_state: Some(RasterizationState::default()),
+                rasterization_state: Some(RasterizationState {
+                    cull_mode: CullMode::None, // Disable backface culling
+                    ..Default::default()
+                }),
                 multisample_state: Some(MultisampleState::default()),
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
                     subpass.num_color_attachments(),
@@ -888,7 +891,10 @@ impl Engine {
                         viewports: [viewport].into_iter().collect(),
                         ..Default::default()
                     }),
-                    rasterization_state: Some(RasterizationState::default()),
+                    rasterization_state: Some(RasterizationState {
+                        cull_mode: CullMode::None, // Disable backface culling
+                        ..Default::default()
+                    }),
                     multisample_state: Some(MultisampleState::default()),
                     color_blend_state: Some(ColorBlendState::with_attachment_states(
                         subpass.num_color_attachments(),

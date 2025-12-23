@@ -177,7 +177,10 @@ impl Parser {
             rotation_vec[1].to_radians() as f32,
             rotation_vec[2].to_radians() as f32,
         );
-        let rotation = Quat::from_euler(glam::EulerRot::XYZ, rot[0], rot[1], rot[2]);
+
+        // USD's rotateXYZ uses extrinsic rotations (around fixed parent axes).
+        // For extrinsic XYZ, use intrinsic ZYX with reversed angle order.
+        let rotation = Quat::from_euler(glam::EulerRot::ZYX, rot[2], rot[1], rot[0]);
 
         let scale_obj = data.get(scale_path, "default")?;
         let scale_vec = scale_obj
