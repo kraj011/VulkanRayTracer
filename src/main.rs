@@ -1,10 +1,19 @@
-use ray_tracer::parser::Parser;
+use ray_tracer::{engine::Engine, parser::Parser};
 
 fn main() {
-    // let engine = Engine::setup();
-    // engine.run();
+    let engine = Engine::setup();
     let mut parser = Parser::new();
-    let _ = parser.parse(&"C:\\Users\\haxan\\Desktop\\scenes\\cornell_box.usdc".to_string());
-    dbg!(parser.meshes);
-    // let _ = test(&"C:\\Users\\haxan\\Desktop\\scenes\\cornell_box.usdc".to_string());
+    let success = parser.parse(&"C:\\Users\\haxan\\Desktop\\scenes\\cornell_box.usdc".to_string());
+
+    match success {
+        Err(err) => panic!("{}", err),
+        Ok(val) => {
+            if !val {
+                panic!("Parser finished in error state. Please debug,")
+            }
+        }
+    }
+
+    engine.create_buffers(&mut parser);
+    engine.run(&parser);
 }

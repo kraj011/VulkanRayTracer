@@ -1,8 +1,9 @@
 use vulkano::{buffer::BufferContents, pipeline::graphics::vertex_input::Vertex};
 
-#[derive(BufferContents, Vertex)]
+#[derive(BufferContents, Vertex, Debug, Clone)]
 #[repr(C)]
-pub struct MyVertex {
+
+pub struct EngineVertex {
     #[format(R32G32B32_SFLOAT)]
     pub position: [f32; 3],
 

@@ -10,7 +10,7 @@ image = "0.24"
 winit = "0.28.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 rand = "0.9.1"
-glam = "0.30.9"
+glam = { version = "0.30.9", features = ["bytemuck"] }
 openusd = "0.1.4"
 anyhow = "1.0.100"
 

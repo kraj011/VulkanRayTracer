@@ -1,31 +1,28 @@
 use std::sync::Arc;
 
-use image::{Frame, ImageBuffer, Rgba, buffer, flat::View};
+use image::{ImageBuffer, Rgba};
 use vulkano::{
     Validated, VulkanError, VulkanLibrary,
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
+    buffer::{Buffer, BufferCreateFlags, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        self, AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyBufferInfo,
+        AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyBufferInfo,
         CopyImageToBufferInfo, PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo,
         SubpassContents, SubpassEndInfo,
-        allocator::{
-            StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
-            StandardCommandBufferBuilderAlloc,
-        },
+        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
     },
     descriptor_set::{
         PersistentDescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
     },
     device::{
-        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateFlags, QueueCreateInfo,
-        QueueFlags, physical::PhysicalDevice,
+        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
+        physical::PhysicalDevice,
     },
     format::{ClearColorValue, Format},
     image::{Image, ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::{
-        AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryAllocator,
-        MemoryTypeFilter, StandardMemoryAllocator,
+        AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
+        StandardMemoryAllocator,
     },
     pipeline::{
         ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
@@ -40,7 +37,7 @@ use vulkano::{
             vertex_input::{Vertex, VertexDefinition},
             viewport::{Viewport, ViewportState},
         },
-        layout::{PipelineDescriptorSetLayoutCreateInfo, PipelineLayoutCreateInfo},
+        layout::PipelineDescriptorSetLayoutCreateInfo,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     shader::ShaderModule,
@@ -54,8 +51,10 @@ use winit::{
 };
 
 use crate::{
+    parser::Parser,
+    shaders,
     state::State,
-    vertex::{self, MyVertex},
+    vertex::{self, EngineVertex},
 };
 
 pub struct Engine {
@@ -75,7 +74,7 @@ pub struct Engine {
     images: Vec<Arc<Image>>,
 
     pipeline: Arc<GraphicsPipeline>,
-    command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>>,
+    framebuffers: Vec<Arc<Framebuffer>>,
 }
 
 impl Engine {
@@ -114,7 +113,7 @@ impl Engine {
 
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
-            nv_ray_tracing: true,
+            khr_ray_tracing_pipeline: true,
             ..DeviceExtensions::empty()
         };
         let (device, mut queues) = Device::new(
@@ -156,7 +155,7 @@ impl Engine {
             .unwrap()[0]
             .0;
 
-        let (mut swapchain, images) = Swapchain::new(
+        let (swapchain, images) = Swapchain::new(
             device.clone(),
             surface.clone(),
             SwapchainCreateInfo {
@@ -204,17 +203,17 @@ impl Engine {
             .collect::<Vec<_>>();
 
         let vertices = vec![
-            vertex::MyVertex {
+            vertex::EngineVertex {
                 position: [-0.5, -0.5, 0.0],
                 normal: [0.0, 0.0, 0.0],
                 uv: [0.0, 0.0],
             },
-            vertex::MyVertex {
+            vertex::EngineVertex {
                 position: [0.5, -0.25, 0.0],
                 normal: [0.0, 0.0, 0.0],
                 uv: [0.0, 0.0],
             },
-            vertex::MyVertex {
+            vertex::EngineVertex {
                 position: [0.0, 0.5, 0.0],
                 normal: [0.0, 0.0, 0.0],
                 uv: [0.0, 0.0],
@@ -235,10 +234,12 @@ impl Engine {
         )
         .unwrap();
 
-        let vs = vs::load(device.clone()).expect("Failed to create vertex shader.");
-        let fs = fs::load(device.clone()).expect("Failed to create fragment shader.");
+        let vs = shaders::preiew_vertex_shader::load(device.clone())
+            .expect("Failed to create vertex shader.");
+        let fs = shaders::preiew_fragment_shader::load(device.clone())
+            .expect("Failed to create fragment shader.");
 
-        let mut viewport = Viewport {
+        let viewport = Viewport {
             offset: [0.0, 0.0],
             extent: window.inner_size().into(),
             depth_range: 0.0..=1.0,
@@ -250,14 +251,6 @@ impl Engine {
             fs.clone(),
             render_pass.clone(),
             viewport.clone(),
-        );
-
-        let command_buffers = Engine::get_command_buffers(
-            &command_buffer_allocator,
-            &queue,
-            &pipeline,
-            &framebuffers,
-            &vertex_buffer,
         );
 
         let state = State {
@@ -280,7 +273,7 @@ impl Engine {
             images,
 
             pipeline,
-            command_buffers,
+            framebuffers,
         };
     }
 
@@ -294,7 +287,7 @@ impl Engine {
         let vs = vs.entry_point("main").unwrap();
         let fs = fs.entry_point("main").unwrap();
 
-        let vertex_input_state = MyVertex::per_vertex()
+        let vertex_input_state = EngineVertex::per_vertex()
             .definition(&vs.info().input_interface)
             .unwrap();
         let stages = [
@@ -337,11 +330,12 @@ impl Engine {
     }
 
     fn get_command_buffers(
+        &self,
         command_buffer_allocator: &StandardCommandBufferAllocator,
         queue: &Arc<Queue>,
         pipeline: &Arc<GraphicsPipeline>,
         framebuffers: &Vec<Arc<Framebuffer>>,
-        vertex_buffer: &Subbuffer<[MyVertex]>,
+        parser: &Parser,
     ) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
         framebuffers
             .iter()
@@ -356,7 +350,7 @@ impl Engine {
                 builder
                     .begin_render_pass(
                         RenderPassBeginInfo {
-                            clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+                            clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
                             ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                         },
                         SubpassBeginInfo {
@@ -366,23 +360,110 @@ impl Engine {
                     )
                     .unwrap()
                     .bind_pipeline_graphics(pipeline.clone())
-                    .unwrap()
-                    .bind_vertex_buffers(0, vertex_buffer.clone())
-                    .unwrap()
-                    .draw(vertex_buffer.len() as u32, 1, 0, 0)
-                    .unwrap()
-                    .end_render_pass(SubpassEndInfo::default())
                     .unwrap();
+
+                parser.meshes.iter().for_each(|mesh| {
+                    if mesh.vertex_buffer.is_none() || mesh.index_buffer.is_none() {
+                        return;
+                    }
+
+                    let push_constants = shaders::preiew_vertex_shader::PushConstants {
+                        mvp: mesh.mvp.to_cols_array_2d(),
+                        col: [rand::random(), rand::random(), rand::random()],
+                    };
+
+                    builder
+                        .bind_vertex_buffers(0, mesh.vertex_buffer.as_ref().unwrap().clone())
+                        .unwrap()
+                        .bind_index_buffer(mesh.index_buffer.as_ref().unwrap().clone())
+                        .unwrap()
+                        .push_constants(pipeline.layout().clone(), 0, push_constants)
+                        .unwrap()
+                        .draw_indexed(mesh.indices.len() as u32, 1, 0, 0, 0)
+                        .unwrap();
+                });
+
+                builder.end_render_pass(SubpassEndInfo::default()).unwrap();
 
                 builder.build().unwrap()
             })
             .collect()
     }
 
-    pub fn run(self) {
+    pub fn create_buffers(&self, parser: &mut Parser) {
+        if parser.cameras.len() == 0 {
+            panic!("No camera found. Please re-run with a camera.");
+        }
+
+        for mesh in parser.meshes.iter_mut() {
+            if !mesh.vertex_buffer.is_none() {
+                continue;
+            }
+
+            let camera = &parser.cameras[0];
+
+            let vertex_buffer = Buffer::from_iter(
+                self.memory_allocator.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::VERTEX_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                mesh.vertices.clone(), // TODO: Is this fine? Maybe free the mesh vertices after?
+            );
+
+            match vertex_buffer {
+                Ok(buffer) => mesh.vertex_buffer = Some(buffer),
+                Err(err) => panic!("Error creating vertex buffer for mesh {}", err),
+            }
+
+            let index_buffer = Buffer::from_iter(
+                self.memory_allocator.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::INDEX_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                mesh.indices.clone(), // TODO: Is this fine? Maybe free the mesh vertices after?
+            );
+
+            match index_buffer {
+                Ok(buffer) => mesh.index_buffer = Some(buffer),
+                Err(err) => panic!("Error creating index buffer for mesh {}", err),
+            }
+
+            let correction = glam::Mat4::from_cols_array(&[
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 1.0,
+            ]);
+
+            mesh.mvp = correction * camera.get_projection() * camera.xform.inverse() * mesh.xform;
+            // mesh.mvp = mesh.mvp.transpose();
+        }
+    }
+
+    pub fn run(self, parser: &Parser) {
+        println!("Num meshes: {}", parser.meshes.len());
+        dbg!(&parser.meshes);
+        dbg!(&parser.cameras);
         let frames_in_flight = self.images.len();
         let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
         let mut previous_fence_i = 0;
+
+        let command_buffers = self.get_command_buffers(
+            &self.command_buffer_allocator,
+            &self.queue,
+            &self.pipeline,
+            &self.framebuffers,
+            parser,
+        );
 
         self.event_loop
             .run(move |event, _, control_flow| match event {
@@ -393,7 +474,7 @@ impl Engine {
                     *control_flow = ControlFlow::Exit;
                 }
                 Event::MainEventsCleared => {
-                    let (image_i, suboptimal, acquire_future) =
+                    let (image_i, _suboptimal, acquire_future) =
                         match swapchain::acquire_next_image(self.swapchain.clone(), None)
                             .map_err(Validated::unwrap)
                         {
@@ -423,7 +504,7 @@ impl Engine {
                         .join(acquire_future)
                         .then_execute(
                             self.queue.clone(),
-                            self.command_buffers[image_i as usize].clone(),
+                            command_buffers[image_i as usize].clone(),
                         )
                         .unwrap()
                         .then_swapchain_present(
@@ -683,17 +764,17 @@ impl Engine {
 
     pub fn test_graphics(self) {
         let vertices = vec![
-            vertex::MyVertex {
+            vertex::EngineVertex {
                 position: [-0.5, -0.5, 0.0],
                 normal: [0.0, 0.0, 0.0],
                 uv: [0.0, 0.0],
             },
-            vertex::MyVertex {
+            vertex::EngineVertex {
                 position: [0.5, -0.25, 0.0],
                 normal: [0.0, 0.0, 0.0],
                 uv: [0.0, 0.0],
             },
-            vertex::MyVertex {
+            vertex::EngineVertex {
                 position: [0.0, 0.5, 0.0],
                 normal: [0.0, 0.0, 0.0],
                 uv: [0.0, 0.0],
@@ -763,8 +844,10 @@ impl Engine {
         )
         .unwrap();
 
-        let vs = vs::load(self.device.clone()).expect("Failed to create vertex shader.");
-        let fs = fs::load(self.device.clone()).expect("Failed to create fragment shader.");
+        let vs = shaders::preiew_vertex_shader::load(self.device.clone())
+            .expect("Failed to create vertex shader.");
+        let fs = shaders::preiew_fragment_shader::load(self.device.clone())
+            .expect("Failed to create fragment shader.");
 
         let viewport = Viewport {
             offset: [0.0, 0.0],
@@ -776,7 +859,7 @@ impl Engine {
             let vs = vs.entry_point("main").unwrap();
             let fs = fs.entry_point("main").unwrap();
 
-            let vertex_input_state = MyVertex::per_vertex()
+            let vertex_input_state = EngineVertex::per_vertex()
                 .definition(&vs.info().input_interface)
                 .unwrap();
             let stages = [
@@ -896,36 +979,6 @@ mod cs {
             void main() {
                 uint idx = gl_GlobalInvocationID.x;
                 buf.data[idx] *= 12;
-            }
-        "
-    }
-}
-
-mod vs {
-    vulkano_shaders::shader! {
-        ty: "vertex",
-        src: r"
-            #version 460
-
-            layout(location = 0) in vec2 position;
-
-            void main() {
-                gl_Position = vec4(position, 0.0, 1.0);
-            }
-        "
-    }
-}
-
-mod fs {
-    vulkano_shaders::shader! {
-        ty: "fragment",
-        src: r"
-            #version 460
-
-            layout(location = 0) out vec4 f_color;
-
-            void main() {
-                f_color = vec4(1.0, 0.0, 0.0, 1.0);
             }
         "
     }

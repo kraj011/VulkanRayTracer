@@ -1,6 +1,9 @@
+pub mod camera;
 pub mod engine;
 pub mod mesh;
 pub mod parser;
+pub mod ray;
 pub mod sampling;
+pub mod shaders;
 pub mod state;
 pub mod vertex;
