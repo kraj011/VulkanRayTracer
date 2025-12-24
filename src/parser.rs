@@ -235,8 +235,6 @@ impl Parser {
             .chunks(3)
             .map(|chunk| EngineVertex {
                 position: [chunk[0], chunk[1], chunk[2]],
-                normal: [0.0, 0.0, 0.0],
-                uv: [0.0, 0.0],
             })
             .collect();
 

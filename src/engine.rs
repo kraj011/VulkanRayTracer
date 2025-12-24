@@ -1,28 +1,37 @@
-use std::sync::Arc;
+use std::{any, sync::Arc};
 
-use image::{ImageBuffer, Rgba};
+use image::{ImageBuffer, Rgba, imageops::FilterType::Triangle};
 use vulkano::{
-    Validated, VulkanError, VulkanLibrary,
-    buffer::{Buffer, BufferCreateFlags, BufferCreateInfo, BufferUsage, Subbuffer},
+    Packed24_8, Validated, VulkanError, VulkanLibrary,
+    acceleration_structure::{
+        AccelerationStructure, AccelerationStructureBuildGeometryInfo,
+        AccelerationStructureBuildRangeInfo, AccelerationStructureCreateInfo,
+        AccelerationStructureGeometries, AccelerationStructureGeometryInstancesData,
+        AccelerationStructureGeometryTrianglesData, AccelerationStructureInstance,
+        BuildAccelerationStructureFlags, GeometryFlags, GeometryInstanceFlags,
+    },
+    buffer::{Buffer, BufferCreateFlags, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyBufferInfo,
         CopyImageToBufferInfo, PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo,
         SubpassContents, SubpassEndInfo,
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
     },
-    descriptor_set::{
-        PersistentDescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
-    },
+    descriptor_set::{WriteDescriptorSet, allocator::StandardDescriptorSetAllocator},
     device::{
-        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
-        physical::PhysicalDevice,
+        Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
+        QueueFlags,
+        physical::{PhysicalDevice, PhysicalDeviceGroupProperties},
     },
     format::{ClearColorValue, Format},
     image::{Image, ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::allocator::{
-        AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
-        StandardMemoryAllocator,
+    memory::{
+        ExternalMemoryHandleTypes,
+        allocator::{
+            AllocationCreateInfo, DeviceLayout, FreeListAllocator, GenericMemoryAllocator,
+            MemoryAllocator, MemoryTypeFilter, StandardMemoryAllocator,
+        },
     },
     pipeline::{
         ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
@@ -65,7 +74,7 @@ pub struct Engine {
     queue: Arc<Queue>,
     queue_family_index: u32,
     memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    command_buffer_allocator: StandardCommandBufferAllocator,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 
     event_loop: EventLoop<()>,
     window: Arc<Window>,
@@ -79,11 +88,11 @@ pub struct Engine {
 
 impl Engine {
     pub fn setup() -> Self {
-        let event_loop = EventLoop::new();
+        let event_loop = EventLoop::new().unwrap();
 
         let library = VulkanLibrary::new()
             .expect("Failed to initialize library. No local Vulkan library or DLL.");
-        let required_exts = Surface::required_extensions(&event_loop);
+        let required_exts = Surface::required_extensions(&event_loop).unwrap();
         let instance = Instance::new(
             library.clone(),
             InstanceCreateInfo {
@@ -113,8 +122,14 @@ impl Engine {
 
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
-            khr_ray_tracing_pipeline: true,
+            nv_ray_tracing: true,
+            khr_acceleration_structure: true,
             ..DeviceExtensions::empty()
+        };
+        let enabled_features = DeviceFeatures {
+            acceleration_structure: true,
+            buffer_device_address: true,
+            ..Default::default()
         };
         let (device, mut queues) = Device::new(
             physical_device.clone(),
@@ -124,6 +139,7 @@ impl Engine {
                     ..Default::default()
                 }],
                 enabled_extensions: device_extensions,
+                enabled_features: enabled_features,
                 ..Default::default()
             },
         )
@@ -133,10 +149,10 @@ impl Engine {
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-        let command_buffer_allocator = StandardCommandBufferAllocator::new(
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             device.clone(),
             StandardCommandBufferAllocatorCreateInfo::default(),
-        );
+        ));
 
         // WINDOW SETUP
         let window = Arc::new(WindowBuilder::new().build(&event_loop).unwrap());
@@ -205,18 +221,12 @@ impl Engine {
         let vertices = vec![
             vertex::EngineVertex {
                 position: [-0.5, -0.5, 0.0],
-                normal: [0.0, 0.0, 0.0],
-                uv: [0.0, 0.0],
             },
             vertex::EngineVertex {
                 position: [0.5, -0.25, 0.0],
-                normal: [0.0, 0.0, 0.0],
-                uv: [0.0, 0.0],
             },
             vertex::EngineVertex {
                 position: [0.0, 0.5, 0.0],
-                normal: [0.0, 0.0, 0.0],
-                uv: [0.0, 0.0],
             },
         ];
         let vertex_buffer = Buffer::from_iter(
@@ -287,9 +297,7 @@ impl Engine {
         let vs = vs.entry_point("main").unwrap();
         let fs = fs.entry_point("main").unwrap();
 
-        let vertex_input_state = EngineVertex::per_vertex()
-            .definition(&vs.info().input_interface)
-            .unwrap();
+        let vertex_input_state = EngineVertex::per_vertex().definition(&vs).unwrap();
         let stages = [
             PipelineShaderStageCreateInfo::new(vs),
             PipelineShaderStageCreateInfo::new(fs),
@@ -334,7 +342,6 @@ impl Engine {
 
     fn get_command_buffers(
         &self,
-        command_buffer_allocator: &StandardCommandBufferAllocator,
         queue: &Arc<Queue>,
         pipeline: &Arc<GraphicsPipeline>,
         framebuffers: &Vec<Arc<Framebuffer>>,
@@ -343,12 +350,13 @@ impl Engine {
         framebuffers
             .iter()
             .map(|framebuffer| {
-                let mut builder = AutoCommandBufferBuilder::primary(
-                    command_buffer_allocator,
-                    queue.queue_family_index(),
-                    CommandBufferUsage::MultipleSubmit,
-                )
-                .unwrap();
+                let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
+                    AutoCommandBufferBuilder::primary(
+                        self.command_buffer_allocator.clone(),
+                        queue.queue_family_index(),
+                        CommandBufferUsage::MultipleSubmit,
+                    )
+                    .unwrap();
 
                 builder
                     .begin_render_pass(
@@ -375,15 +383,17 @@ impl Engine {
                         col: [rand::random(), rand::random(), rand::random()],
                     };
 
-                    builder
-                        .bind_vertex_buffers(0, mesh.vertex_buffer.as_ref().unwrap().clone())
-                        .unwrap()
-                        .bind_index_buffer(mesh.index_buffer.as_ref().unwrap().clone())
-                        .unwrap()
-                        .push_constants(pipeline.layout().clone(), 0, push_constants)
-                        .unwrap()
-                        .draw_indexed(mesh.indices.len() as u32, 1, 0, 0, 0)
-                        .unwrap();
+                    unsafe {
+                        builder
+                            .bind_vertex_buffers(0, mesh.vertex_buffer.as_ref().unwrap().clone())
+                            .unwrap()
+                            .bind_index_buffer(mesh.index_buffer.as_ref().unwrap().clone())
+                            .unwrap()
+                            .push_constants(pipeline.layout().clone(), 0, push_constants)
+                            .unwrap()
+                            .draw_indexed(mesh.indices.len() as u32, 1, 0, 0, 0)
+                            .unwrap()
+                    };
                 });
 
                 builder.end_render_pass(SubpassEndInfo::default()).unwrap();
@@ -408,7 +418,9 @@ impl Engine {
             let vertex_buffer = Buffer::from_iter(
                 self.memory_allocator.clone(),
                 BufferCreateInfo {
-                    usage: BufferUsage::VERTEX_BUFFER,
+                    usage: BufferUsage::VERTEX_BUFFER
+                        | BufferUsage::SHADER_DEVICE_ADDRESS
+                        | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
                     ..Default::default()
                 },
                 AllocationCreateInfo {
@@ -424,10 +436,18 @@ impl Engine {
                 Err(err) => panic!("Error creating vertex buffer for mesh {}", err),
             }
 
+            let required_elements = mesh.indices.len() * 4 + 1; // This is actually bytes, but Vulkano checks .len()
+            let mut padded_indices = mesh.indices.clone();
+            while padded_indices.len() < required_elements {
+                padded_indices.push(0);
+            }
+
             let index_buffer = Buffer::from_iter(
                 self.memory_allocator.clone(),
                 BufferCreateInfo {
-                    usage: BufferUsage::INDEX_BUFFER,
+                    usage: BufferUsage::INDEX_BUFFER
+                        | BufferUsage::SHADER_DEVICE_ADDRESS
+                        | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
                     ..Default::default()
                 },
                 AllocationCreateInfo {
@@ -435,11 +455,11 @@ impl Engine {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                mesh.indices.clone(), // TODO: Is this fine? Maybe free the mesh vertices after?
+                padded_indices,
             );
 
             match index_buffer {
-                Ok(buffer) => mesh.index_buffer = Some(buffer),
+                Ok(buffer) => mesh.index_buffer = Some(vulkano::buffer::IndexBuffer::U32(buffer)),
                 Err(err) => panic!("Error creating index buffer for mesh {}", err),
             }
 
@@ -452,521 +472,270 @@ impl Engine {
         }
     }
 
+    fn create_acceleration_structures(
+        &self,
+        geometries: AccelerationStructureGeometries,
+        flags: BuildAccelerationStructureFlags,
+        build_range_info: &AccelerationStructureBuildRangeInfo,
+    ) -> Result<Arc<AccelerationStructure>, anyhow::Error> {
+        // https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/#understanding-acceleration-structures-blas-vs-tlas
+        let mut build_info = AccelerationStructureBuildGeometryInfo::new(geometries);
+        build_info.flags = flags;
+        build_info.mode = vulkano::acceleration_structure::BuildAccelerationStructureMode::Build;
+        build_info.dst_acceleration_structure = None;
+
+        let build_size = self.device.acceleration_structure_build_sizes(
+            vulkano::acceleration_structure::AccelerationStructureBuildType::Device,
+            &build_info,
+            &[build_range_info.primitive_count],
+        )?;
+
+        let as_buffer = Buffer::new_slice::<u8>(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE
+                    | BufferUsage::SHADER_DEVICE_ADDRESS,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            build_size.acceleration_structure_size,
+        )?;
+
+        let acceleration_structure = unsafe {
+            AccelerationStructure::new(
+                self.device.clone(),
+                AccelerationStructureCreateInfo::new(as_buffer),
+            )
+        }?;
+
+        let properties = self.physical_device.properties();
+        let min_scratch_offset_alignment = properties
+            .min_acceleration_structure_scratch_offset_alignment
+            .unwrap() as u64;
+
+        let scratch_size = (build_size.build_scratch_size + min_scratch_offset_alignment - 1)
+            & !(min_scratch_offset_alignment - 1);
+
+        let scratch_buffer = Buffer::new_slice::<u8>(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER | BufferUsage::SHADER_DEVICE_ADDRESS,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            scratch_size,
+        )?;
+
+        build_info.dst_acceleration_structure = Some(acceleration_structure.clone());
+        build_info.scratch_data = Some(scratch_buffer);
+
+        // TODO: Create actual acceleration structure
+        // TODO: Optimize. See bottom of section 2.2 for info
+
+        let mut builder = AutoCommandBufferBuilder::primary(
+            self.command_buffer_allocator.clone(),
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
+        unsafe {
+            builder
+                .build_acceleration_structure(build_info, vec![*build_range_info].into())
+                .unwrap()
+        };
+
+        let command_buffer = builder.build().unwrap();
+
+        let future = sync::now(self.device.clone())
+            .then_execute(self.queue.clone(), command_buffer)
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap();
+
+        future.wait(None).unwrap();
+
+        Ok(acceleration_structure)
+    }
+
+    fn create_blas(
+        &self,
+        parser: &Parser,
+    ) -> Result<Vec<Arc<AccelerationStructure>>, anyhow::Error> {
+        // NOTE: DO NOT USE TRANSFORMS HERE SINCE WE'LL TRANSFORM IT IN THE TLAS
+        let mut blas_vec: Vec<Arc<AccelerationStructure>> = Vec::new();
+        for mesh in &parser.meshes {
+            let (range, geometry) = mesh.get_acceleration_structure();
+
+            let blas = self.create_acceleration_structures(
+                geometry,
+                BuildAccelerationStructureFlags::PREFER_FAST_TRACE,
+                &range,
+            )?;
+            blas_vec.push(blas);
+        }
+
+        Ok(blas_vec)
+    }
+
+    fn create_tlas(
+        &self,
+        parser: &Parser,
+        blas_vec: Vec<Arc<AccelerationStructure>>,
+    ) -> Result<Arc<AccelerationStructure>, anyhow::Error> {
+        let mut tlas_instances = Vec::new();
+        for (i, mesh) in parser.meshes.iter().enumerate() {
+            let xform = mesh.xform;
+            let transform = [
+                [
+                    xform.x_axis[0],
+                    xform.y_axis[0],
+                    xform.z_axis[0],
+                    xform.w_axis[0],
+                ],
+                [
+                    xform.x_axis[1],
+                    xform.y_axis[1],
+                    xform.z_axis[1],
+                    xform.w_axis[1],
+                ],
+                [
+                    xform.x_axis[2],
+                    xform.y_axis[2],
+                    xform.z_axis[2],
+                    xform.w_axis[2],
+                ],
+            ];
+            let instance = AccelerationStructureInstance {
+                transform: transform,
+                instance_custom_index_and_mask: Packed24_8::new(i as u32, 0xFF),
+                instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(
+                    0,
+                    GeometryInstanceFlags::TRIANGLE_FACING_CULL_DISABLE.into(),
+                ),
+                acceleration_structure_reference: blas_vec[i].device_address().get(),
+            };
+
+            tlas_instances.push(instance);
+        }
+
+        let tlas_instances_buffer = Buffer::from_iter(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                    | BufferUsage::SHADER_DEVICE_ADDRESS,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            tlas_instances,
+        )?;
+
+        let geometry = AccelerationStructureGeometries::Instances(
+            AccelerationStructureGeometryInstancesData::new(
+                vulkano::acceleration_structure::AccelerationStructureGeometryInstancesDataType::Values(Some(tlas_instances_buffer)))
+        );
+
+        let build_range_info = AccelerationStructureBuildRangeInfo {
+            primitive_count: parser.meshes.len() as u32,
+            ..Default::default()
+        };
+
+        let tlas = self.create_acceleration_structures(
+            geometry,
+            BuildAccelerationStructureFlags::PREFER_FAST_TRACE,
+            &build_range_info,
+        )?;
+
+        Ok(tlas)
+    }
+
     pub fn run(self, parser: &Parser) {
-        println!("Num meshes: {}", parser.meshes.len());
-        dbg!(&parser.meshes);
-        dbg!(&parser.cameras);
         let frames_in_flight = self.images.len();
         let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
         let mut previous_fence_i = 0;
 
-        let command_buffers = self.get_command_buffers(
-            &self.command_buffer_allocator,
-            &self.queue,
-            &self.pipeline,
-            &self.framebuffers,
-            parser,
-        );
+        let command_buffers =
+            self.get_command_buffers(&self.queue, &self.pipeline, &self.framebuffers, parser);
 
-        self.event_loop
-            .run(move |event, _, control_flow| match event {
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    *control_flow = ControlFlow::Exit;
-                }
-                Event::MainEventsCleared => {
-                    let (image_i, _suboptimal, acquire_future) =
-                        match swapchain::acquire_next_image(self.swapchain.clone(), None)
-                            .map_err(Validated::unwrap)
-                        {
-                            Ok(r) => r,
-                            Err(VulkanError::OutOfDate) => {
-                                // Do something here
-                                // recereate swapchain
-                                return;
-                            }
-                            Err(e) => panic!("Failed to acquire next image! {e}"),
-                        };
+        let blas = self.create_blas(parser).unwrap();
+        let tlas = self.create_tlas(parser, blas).unwrap();
 
-                    if let Some(image_fence) = &fences[image_i as usize] {
-                        image_fence.wait(None).unwrap();
-                    }
-
-                    let previous_future = match fences[previous_fence_i as usize].clone() {
-                        None => {
-                            let mut now = sync::now(self.device.clone());
-                            now.cleanup_finished();
-                            now.boxed()
-                        }
-                        Some(fence) => fence.boxed(),
-                    };
-
-                    let future = previous_future
-                        .join(acquire_future)
-                        .then_execute(
-                            self.queue.clone(),
-                            command_buffers[image_i as usize].clone(),
-                        )
-                        .unwrap()
-                        .then_swapchain_present(
-                            self.queue.clone(),
-                            SwapchainPresentInfo::swapchain_image_index(
-                                self.swapchain.clone(),
-                                image_i,
-                            ),
-                        )
-                        .then_signal_fence_and_flush();
-
-                    fences[image_i as usize] = match future.map_err(Validated::unwrap) {
-                        Ok(value) => Some(Arc::new(value)),
-                        Err(VulkanError::OutOfDate) => {
-                            // recreate swapchain
-                            None
-                        }
-                        Err(e) => {
-                            println!("Failed to flush future: {e}");
-                            None
-                        }
-                    };
-
-                    previous_fence_i = image_i;
-                }
-                _ => (),
-            });
-    }
-
-    pub fn test_memory_transfer(self) {
-        let source_content = 0..64;
-        let source = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            source_content,
-        )
-        .expect("Failed to create source buffer.");
-
-        let destination_content = (0..64).map(|_| 0);
-        let destination = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-                ..Default::default()
-            },
-            destination_content,
-        )
-        .expect("Failed to create destination buffer.");
-
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &self.command_buffer_allocator,
-            self.queue_family_index,
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-
-        builder
-            .copy_buffer(CopyBufferInfo::buffers(source.clone(), destination.clone()))
-            .unwrap();
-
-        let command_buffer = builder.build().unwrap();
-
-        let future = sync::now(self.device.clone())
-            .then_execute(self.queue.clone(), command_buffer)
-            .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap();
-
-        future.wait(None).unwrap();
-
-        let src_content = source.read().unwrap();
-        let destination_content = destination.read().unwrap();
-        assert_eq!(&*src_content, &*destination_content);
-
-        println!("Everything succeeded!");
-    }
-
-    pub fn test_compute_pipeline(self) {
-        let data_iter = 0..65536u32;
-        let data_buffer = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::STORAGE_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            data_iter,
-        )
-        .expect("Failed to create data buffer.");
-
-        let shader =
-            cs::load(self.device.clone()).expect("Failed to create compute shader module.");
-
-        let cs = shader.entry_point("main").unwrap();
-        let stage = PipelineShaderStageCreateInfo::new(cs);
-
-        // https://vulkano.rs/04-compute-pipeline/02-compute-pipeline.html
-        // This tries to auto create a pipeline based on our shader...
-        // worth manually creating the pipeline in the future
-        let layout = PipelineLayout::new(
-            self.device.clone(),
-            PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                .into_pipeline_layout_create_info(self.device.clone())
-                .unwrap(),
-        )
-        .unwrap();
-
-        let compute_pipeline = ComputePipeline::new(
-            self.device.clone(),
-            None,
-            ComputePipelineCreateInfo::stage_layout(stage, layout),
-        )
-        .unwrap();
-
-        let descriptor_set_allocator =
-            StandardDescriptorSetAllocator::new(self.device.clone(), Default::default());
-        let pipeline_layout = compute_pipeline.layout();
-        let descriptor_set_layouts = pipeline_layout.set_layouts();
-
-        let descriptor_set_layout_index = 0;
-        let descriptor_set_layout = descriptor_set_layouts
-            .get(descriptor_set_layout_index)
-            .unwrap();
-        let descriptor_set = PersistentDescriptorSet::new(
-            &descriptor_set_allocator,
-            descriptor_set_layout.clone(),
-            [WriteDescriptorSet::buffer(0, data_buffer.clone())],
-            [],
-        )
-        .unwrap();
-
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &self.command_buffer_allocator,
-            self.queue_family_index,
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-
-        let work_group_counts = [1024, 1, 1];
-
-        builder
-            .bind_pipeline_compute(compute_pipeline.clone())
-            .unwrap()
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                compute_pipeline.layout().clone(),
-                descriptor_set_layout_index as u32,
-                descriptor_set,
-            )
-            .unwrap()
-            .dispatch(work_group_counts)
-            .unwrap();
-
-        let command_buffer = builder.build().unwrap();
-
-        let future = sync::now(self.device.clone())
-            .then_execute(self.queue.clone(), command_buffer)
-            .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap();
-
-        future.wait(None).unwrap();
-
-        let content = data_buffer.read().unwrap();
-        for (n, val) in content.iter().enumerate() {
-            assert_eq!(*val, n as u32 * 12);
-        }
-
-        println!("Everything succeeded!");
-    }
-
-    pub fn test_image(self) {
-        let image = Image::new(
-            self.memory_allocator.clone(),
-            ImageCreateInfo {
-                image_type: ImageType::Dim2d,
-                format: Format::R8G8B8A8_UNORM,
-                extent: [1024, 1024, 1],
-                usage: ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let buf = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-                ..Default::default()
-            },
-            (0..1024 * 1024 * 4).map(|_| 0u8),
-        )
-        .expect("Failed to create img buffer");
-
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &self.command_buffer_allocator,
-            self.queue_family_index,
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-
-        builder
-            .clear_color_image(ClearColorImageInfo {
-                clear_value: ClearColorValue::Float([0.0, 0.0, 1.0, 1.0]),
-                ..ClearColorImageInfo::image(image.clone())
-            })
-            .unwrap()
-            .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
-                image.clone(),
-                buf.clone(),
-            ))
-            .unwrap();
-
-        let command_buffer = builder.build().unwrap();
-
-        let future = sync::now(self.device.clone())
-            .then_execute(self.queue.clone(), command_buffer)
-            .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap();
-
-        future.wait(None).unwrap();
-
-        let buffer_content = buf.read().unwrap();
-        let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, &buffer_content[..]).unwrap();
-
-        image.save("image.png").unwrap();
-
-        println!("Saved image succesfully!");
-    }
-
-    pub fn test_graphics(self) {
-        let vertices = vec![
-            vertex::EngineVertex {
-                position: [-0.5, -0.5, 0.0],
-                normal: [0.0, 0.0, 0.0],
-                uv: [0.0, 0.0],
-            },
-            vertex::EngineVertex {
-                position: [0.5, -0.25, 0.0],
-                normal: [0.0, 0.0, 0.0],
-                uv: [0.0, 0.0],
-            },
-            vertex::EngineVertex {
-                position: [0.0, 0.5, 0.0],
-                normal: [0.0, 0.0, 0.0],
-                uv: [0.0, 0.0],
-            },
-        ];
-        let vertex_buffer = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            vertices,
-        )
-        .unwrap();
-
-        let render_pass = vulkano::ordered_passes_renderpass!(
-            self.device.clone(),
-            attachments:{
-                color: {
-                    format: Format::R8G8B8A8_UNORM,
-                    samples: 1,
-                    load_op: Clear,
-                    store_op: Store
-                },
-            },
-            passes:[
-                {
-                color:[color],
-                depth_stencil:{},
-                input:[],
+        let _ = self.event_loop.run(move |event, elwt| match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                elwt.exit();
             }
-            ]
-        )
-        .unwrap();
+            Event::AboutToWait => {
+                let (image_i, _suboptimal, acquire_future) =
+                    match swapchain::acquire_next_image(self.swapchain.clone(), None)
+                        .map_err(Validated::unwrap)
+                    {
+                        Ok(r) => r,
+                        Err(VulkanError::OutOfDate) => {
+                            // Do something here
+                            // recereate swapchain
+                            return;
+                        }
+                        Err(e) => panic!("Failed to acquire next image! {e}"),
+                    };
 
-        let image = Image::new(
-            self.memory_allocator.clone(),
-            ImageCreateInfo {
-                image_type: ImageType::Dim2d,
-                format: Format::R8G8B8A8_UNORM,
-                extent: [1024, 1024, 1],
-                usage: ImageUsage::TRANSFER_DST
-                    | ImageUsage::TRANSFER_SRC
-                    | ImageUsage::COLOR_ATTACHMENT,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+                if let Some(image_fence) = &fences[image_i as usize] {
+                    image_fence.wait(None).unwrap();
+                }
 
-        let view = ImageView::new_default(image.clone()).unwrap();
+                let previous_future = match fences[previous_fence_i as usize].clone() {
+                    None => {
+                        let mut now = sync::now(self.device.clone());
+                        now.cleanup_finished();
+                        now.boxed()
+                    }
+                    Some(fence) => fence.boxed(),
+                };
 
-        let framebuffer = Framebuffer::new(
-            render_pass.clone(),
-            FramebufferCreateInfo {
-                attachments: vec![view],
-                ..Default::default()
-            },
-        )
-        .unwrap();
+                let future = previous_future
+                    .join(acquire_future)
+                    .then_execute(
+                        self.queue.clone(),
+                        command_buffers[image_i as usize].clone(),
+                    )
+                    .unwrap()
+                    .then_swapchain_present(
+                        self.queue.clone(),
+                        SwapchainPresentInfo::swapchain_image_index(
+                            self.swapchain.clone(),
+                            image_i,
+                        ),
+                    )
+                    .then_signal_fence_and_flush();
 
-        let vs = shaders::preiew_vertex_shader::load(self.device.clone())
-            .expect("Failed to create vertex shader.");
-        let fs = shaders::preiew_fragment_shader::load(self.device.clone())
-            .expect("Failed to create fragment shader.");
+                fences[image_i as usize] = match future.map_err(Validated::unwrap) {
+                    Ok(value) => Some(Arc::new(value)),
+                    Err(VulkanError::OutOfDate) => {
+                        // recreate swapchain
+                        None
+                    }
+                    Err(e) => {
+                        println!("Failed to flush future: {e}");
+                        None
+                    }
+                };
 
-        let viewport = Viewport {
-            offset: [0.0, 0.0],
-            extent: [1024.0, 1024.0],
-            depth_range: 0.0..=1.0,
-        };
-
-        let pipeline = {
-            let vs = vs.entry_point("main").unwrap();
-            let fs = fs.entry_point("main").unwrap();
-
-            let vertex_input_state = EngineVertex::per_vertex()
-                .definition(&vs.info().input_interface)
-                .unwrap();
-            let stages = [
-                PipelineShaderStageCreateInfo::new(vs),
-                PipelineShaderStageCreateInfo::new(fs),
-            ];
-
-            let layout = PipelineLayout::new(
-                self.device.clone(),
-                PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-                    .into_pipeline_layout_create_info(self.device.clone())
-                    .unwrap(),
-            )
-            .unwrap();
-
-            let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-
-            GraphicsPipeline::new(
-                self.device.clone(),
-                None,
-                GraphicsPipelineCreateInfo {
-                    stages: stages.into_iter().collect(),
-                    vertex_input_state: Some(vertex_input_state),
-                    input_assembly_state: Some(InputAssemblyState::default()),
-                    viewport_state: Some(ViewportState {
-                        viewports: [viewport].into_iter().collect(),
-                        ..Default::default()
-                    }),
-                    rasterization_state: Some(RasterizationState {
-                        cull_mode: CullMode::None, // Disable backface culling
-                        ..Default::default()
-                    }),
-                    multisample_state: Some(MultisampleState::default()),
-                    color_blend_state: Some(ColorBlendState::with_attachment_states(
-                        subpass.num_color_attachments(),
-                        ColorBlendAttachmentState::default(),
-                    )),
-                    subpass: Some(subpass.into()),
-                    ..GraphicsPipelineCreateInfo::layout(layout)
-                },
-            )
-            .unwrap()
-        };
-
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &self.command_buffer_allocator,
-            self.queue_family_index,
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-
-        let buf = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_RANDOM_ACCESS,
-                ..Default::default()
-            },
-            (0..1024 * 1024 * 4).map(|_| 0u8),
-        )
-        .expect("failed to create buffer");
-
-        builder
-            .begin_render_pass(
-                RenderPassBeginInfo {
-                    clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
-                    ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                },
-                SubpassBeginInfo {
-                    contents: SubpassContents::Inline,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .bind_pipeline_graphics(pipeline.clone())
-            .unwrap()
-            .bind_vertex_buffers(0, vertex_buffer)
-            .unwrap()
-            .draw(3, 1, 0, 0)
-            .unwrap()
-            .end_render_pass(SubpassEndInfo::default())
-            .unwrap()
-            .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image, buf.clone()))
-            .unwrap();
-
-        let command_buffer = builder.build().unwrap();
-
-        let future = sync::now(self.device.clone())
-            .then_execute(self.queue.clone(), command_buffer)
-            .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap();
-
-        future.wait(None).unwrap();
-
-        let buffer_content = buf.read().unwrap();
-        let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, &buffer_content[..]).unwrap();
-        image.save("image.png").unwrap();
-
-        println!("Everything succeeded!");
+                previous_fence_i = image_i;
+            }
+            _ => (),
+        });
     }
 }
 
