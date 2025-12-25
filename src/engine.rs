@@ -2,7 +2,7 @@ use std::{any, sync::Arc};
 
 use image::{ImageBuffer, Rgba, imageops::FilterType::Triangle};
 use vulkano::{
-    Packed24_8, Validated, VulkanError, VulkanLibrary,
+    Packed24_8, Validated, Version, VulkanError, VulkanLibrary,
     acceleration_structure::{
         AccelerationStructure, AccelerationStructureBuildGeometryInfo,
         AccelerationStructureBuildRangeInfo, AccelerationStructureCreateInfo,
@@ -13,11 +13,15 @@ use vulkano::{
     buffer::{Buffer, BufferCreateFlags, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyBufferInfo,
-        CopyImageToBufferInfo, PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo,
-        SubpassContents, SubpassEndInfo,
+        CopyImageInfo, CopyImageToBufferInfo, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
+        SubpassBeginInfo, SubpassContents, SubpassEndInfo,
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
     },
-    descriptor_set::{WriteDescriptorSet, allocator::StandardDescriptorSetAllocator},
+    descriptor_set::{
+        DescriptorSet, WriteDescriptorSet,
+        allocator::StandardDescriptorSetAllocator,
+        layout::{DescriptorBindingFlags, DescriptorSetLayoutBinding},
+    },
     device::{
         Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
         QueueFlags,
@@ -46,7 +50,11 @@ use vulkano::{
             vertex_input::{Vertex, VertexDefinition},
             viewport::{Viewport, ViewportState},
         },
-        layout::PipelineDescriptorSetLayoutCreateInfo,
+        layout::{PipelineDescriptorSetLayoutCreateInfo, PipelineLayoutCreateFlags},
+        ray_tracing::{
+            RayTracingPipeline, RayTracingPipelineCreateInfo, RayTracingShaderGroupCreateInfo,
+            ShaderBindingTable, ShaderGroupHandlesData,
+        },
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     shader::ShaderModule,
@@ -61,7 +69,7 @@ use winit::{
 
 use crate::{
     parser::Parser,
-    shaders,
+    shaders::{self, closest_hit_shader, miss_shader, ray_gen_shader},
     state::State,
     vertex::{self, EngineVertex},
 };
@@ -84,6 +92,11 @@ pub struct Engine {
 
     pipeline: Arc<GraphicsPipeline>,
     framebuffers: Vec<Arc<Framebuffer>>,
+
+    rt_pipeline: Arc<RayTracingPipeline>,
+    sbt: Arc<ShaderBindingTable>,
+    rt_storage_image: Arc<Image>,
+    rt_storage_image_view: Arc<ImageView>,
 }
 
 impl Engine {
@@ -122,13 +135,15 @@ impl Engine {
 
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
-            nv_ray_tracing: true,
+            khr_ray_tracing_pipeline: true,
             khr_acceleration_structure: true,
+            khr_deferred_host_operations: true,
             ..DeviceExtensions::empty()
         };
         let enabled_features = DeviceFeatures {
             acceleration_structure: true,
             buffer_device_address: true,
+            ray_tracing_pipeline: true,
             ..Default::default()
         };
         let (device, mut queues) = Device::new(
@@ -178,7 +193,7 @@ impl Engine {
                 min_image_count: caps.min_image_count + 1,
                 image_format,
                 image_extent: dimensions.into(),
-                image_usage: ImageUsage::COLOR_ATTACHMENT,
+                image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST,
                 composite_alpha,
                 ..Default::default()
             },
@@ -218,32 +233,6 @@ impl Engine {
             })
             .collect::<Vec<_>>();
 
-        let vertices = vec![
-            vertex::EngineVertex {
-                position: [-0.5, -0.5, 0.0],
-            },
-            vertex::EngineVertex {
-                position: [0.5, -0.25, 0.0],
-            },
-            vertex::EngineVertex {
-                position: [0.0, 0.5, 0.0],
-            },
-        ];
-        let vertex_buffer = Buffer::from_iter(
-            memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            vertices,
-        )
-        .unwrap();
-
         let vs = shaders::preiew_vertex_shader::load(device.clone())
             .expect("Failed to create vertex shader.");
         let fs = shaders::preiew_fragment_shader::load(device.clone())
@@ -267,6 +256,27 @@ impl Engine {
             recreate_swapchain: false,
         };
 
+        let (rt_pipeline, sbt) =
+            Engine::create_ray_trace_pipeline(device.clone(), memory_allocator.clone()).unwrap();
+
+        let rt_storage_image = Image::new(
+            memory_allocator.clone(),
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                format: swapchain.image_format(),
+                extent: [dimensions.width, dimensions.height, 1],
+                usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let rt_storage_image_view = ImageView::new_default(rt_storage_image.clone()).unwrap();
+
         return Engine {
             state,
             device,
@@ -284,6 +294,11 @@ impl Engine {
 
             pipeline,
             framebuffers,
+
+            rt_pipeline,
+            sbt,
+            rt_storage_image,
+            rt_storage_image_view,
         };
     }
 
@@ -659,7 +674,145 @@ impl Engine {
         Ok(tlas)
     }
 
-    pub fn run(self, parser: &Parser) {
+    fn create_rt_descriptor_set(&self, tlas: Arc<AccelerationStructure>) -> Arc<DescriptorSet> {
+        let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            self.device.clone(),
+            Default::default(),
+        ));
+
+        DescriptorSet::new(
+            descriptor_set_allocator.clone(),
+            self.rt_pipeline.layout().set_layouts()[0].clone(),
+            [
+                WriteDescriptorSet::acceleration_structure(0, tlas.clone()),
+                WriteDescriptorSet::image_view(1, self.rt_storage_image_view.clone()),
+            ],
+            [],
+        )
+        .unwrap()
+    }
+
+    fn create_ray_trace_pipeline(
+        device: Arc<Device>,
+        memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    ) -> Result<(Arc<RayTracingPipeline>, Arc<ShaderBindingTable>), anyhow::Error> {
+        // TODO: Come back here once shaders are written since Vulkano objects are created from shaders
+        let raygen_shader = ray_gen_shader::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+
+        let miss_shader = miss_shader::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+
+        let closest_hit_shader = closest_hit_shader::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+
+        let stages: Vec<_> = [
+            PipelineShaderStageCreateInfo::new(raygen_shader),
+            PipelineShaderStageCreateInfo::new(miss_shader),
+            PipelineShaderStageCreateInfo::new(closest_hit_shader),
+        ]
+        .into_iter()
+        .collect();
+
+        let groups: Vec<_> = [
+            // Raygen group (index 0 in stages)
+            RayTracingShaderGroupCreateInfo::General { general_shader: 0 },
+            // Miss group (index 1 in stages)
+            RayTracingShaderGroupCreateInfo::General { general_shader: 1 },
+            // Hit group (index 2 in stages - closest hit)
+            RayTracingShaderGroupCreateInfo::TrianglesHit {
+                closest_hit_shader: Some(2),
+                any_hit_shader: None,
+            },
+        ]
+        .into_iter()
+        .collect();
+
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                .into_pipeline_layout_create_info(device.clone())
+                .unwrap(),
+        )
+        .unwrap();
+
+        let pipeline_info = RayTracingPipelineCreateInfo {
+            stages: stages.into(),
+            groups: groups.into(),
+            max_pipeline_ray_recursion_depth: 1,
+            ..RayTracingPipelineCreateInfo::layout(layout)
+        };
+
+        let rt_pipeline = RayTracingPipeline::new(device.clone(), None, pipeline_info)?;
+
+        let sbt = ShaderBindingTable::new(memory_allocator.clone(), rt_pipeline.as_ref())?;
+
+        Ok((rt_pipeline, sbt.into()))
+    }
+
+    fn get_raytracing_command_buffers(
+        &self,
+        parser: &Parser,
+        descriptor_set: &Arc<DescriptorSet>,
+        swapchain_image: &Arc<Image>,
+    ) -> Arc<PrimaryAutoCommandBuffer> {
+        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
+            AutoCommandBufferBuilder::primary(
+                self.command_buffer_allocator.clone(),
+                self.queue.queue_family_index(),
+                CommandBufferUsage::MultipleSubmit,
+            )
+            .unwrap();
+
+        unsafe {
+            builder
+                .bind_pipeline_ray_tracing(self.rt_pipeline.clone())
+                .unwrap()
+                .push_constants(
+                    self.rt_pipeline.layout().clone(),
+                    0,
+                    ray_gen_shader::PushConstants {
+                        projInv: parser.cameras[0]
+                            .get_projection()
+                            .inverse()
+                            .to_cols_array_2d(),
+                        viewInv: parser.cameras[0].xform.to_cols_array_2d(),
+                    },
+                )
+                .unwrap()
+                .bind_descriptor_sets(
+                    PipelineBindPoint::RayTracing,
+                    self.rt_pipeline.layout().clone(),
+                    0,
+                    descriptor_set.clone(),
+                )
+                .unwrap()
+                .trace_rays(
+                    self.sbt.addresses().clone(),
+                    [
+                        self.window.inner_size().width,
+                        self.window.inner_size().height,
+                        1,
+                    ],
+                )
+                .unwrap()
+                .copy_image(CopyImageInfo::images(
+                    self.rt_storage_image.clone(),
+                    swapchain_image.clone(),
+                ))
+                .unwrap();
+        }
+
+        builder.build().unwrap()
+    }
+
+    pub fn run_rasterization(self, parser: &Parser) {
         let frames_in_flight = self.images.len();
         let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
         let mut previous_fence_i = 0;
@@ -668,73 +821,195 @@ impl Engine {
             self.get_command_buffers(&self.queue, &self.pipeline, &self.framebuffers, parser);
 
         let blas = self.create_blas(parser).unwrap();
-        let tlas = self.create_tlas(parser, blas).unwrap();
+        let tlas = self.create_tlas(parser, blas.clone()).unwrap();
 
-        let _ = self.event_loop.run(move |event, elwt| match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                elwt.exit();
-            }
-            Event::AboutToWait => {
-                let (image_i, _suboptimal, acquire_future) =
-                    match swapchain::acquire_next_image(self.swapchain.clone(), None)
-                        .map_err(Validated::unwrap)
-                    {
-                        Ok(r) => r,
-                        Err(VulkanError::OutOfDate) => {
-                            // Do something here
-                            // recereate swapchain
-                            return;
+        unsafe {
+            self.device.wait_idle().unwrap();
+        }
+
+        let window = self.window.clone();
+        let _ = self.event_loop.run(move |event, elwt| {
+            // Keep BLAS and TLAS alive for the lifetime of the app
+            let _ = (&blas, &tlas);
+
+            match event {
+                Event::WindowEvent {
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    elwt.exit();
+                }
+                Event::AboutToWait => {
+                    // Explicit redraw request creates clear frame boundaries for Nsight
+                    window.request_redraw();
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::RedrawRequested,
+                    ..
+                } => {
+                    let (image_i, _suboptimal, acquire_future) =
+                        match swapchain::acquire_next_image(self.swapchain.clone(), None)
+                            .map_err(Validated::unwrap)
+                        {
+                            Ok(r) => r,
+                            Err(VulkanError::OutOfDate) => {
+                                // Do something here
+                                // recereate swapchain
+                                return;
+                            }
+                            Err(e) => panic!("Failed to acquire next image! {e}"),
+                        };
+
+                    if let Some(image_fence) = &fences[image_i as usize] {
+                        image_fence.wait(None).unwrap();
+                    }
+
+                    let previous_future = match fences[previous_fence_i as usize].clone() {
+                        None => {
+                            let mut now = sync::now(self.device.clone());
+                            now.cleanup_finished();
+                            now.boxed()
                         }
-                        Err(e) => panic!("Failed to acquire next image! {e}"),
+                        Some(fence) => fence.boxed(),
                     };
 
-                if let Some(image_fence) = &fences[image_i as usize] {
-                    image_fence.wait(None).unwrap();
+                    let future = previous_future
+                        .join(acquire_future)
+                        .then_execute(
+                            self.queue.clone(),
+                            command_buffers[image_i as usize].clone(),
+                        )
+                        .unwrap()
+                        .then_swapchain_present(
+                            self.queue.clone(),
+                            SwapchainPresentInfo::swapchain_image_index(
+                                self.swapchain.clone(),
+                                image_i,
+                            ),
+                        )
+                        .then_signal_fence_and_flush();
+
+                    fences[image_i as usize] = match future.map_err(Validated::unwrap) {
+                        Ok(value) => Some(Arc::new(value)),
+                        Err(VulkanError::OutOfDate) => {
+                            // recreate swapchain
+                            None
+                        }
+                        Err(e) => {
+                            println!("Failed to flush future: {e}");
+                            None
+                        }
+                    };
+
+                    previous_fence_i = image_i;
                 }
-
-                let previous_future = match fences[previous_fence_i as usize].clone() {
-                    None => {
-                        let mut now = sync::now(self.device.clone());
-                        now.cleanup_finished();
-                        now.boxed()
-                    }
-                    Some(fence) => fence.boxed(),
-                };
-
-                let future = previous_future
-                    .join(acquire_future)
-                    .then_execute(
-                        self.queue.clone(),
-                        command_buffers[image_i as usize].clone(),
-                    )
-                    .unwrap()
-                    .then_swapchain_present(
-                        self.queue.clone(),
-                        SwapchainPresentInfo::swapchain_image_index(
-                            self.swapchain.clone(),
-                            image_i,
-                        ),
-                    )
-                    .then_signal_fence_and_flush();
-
-                fences[image_i as usize] = match future.map_err(Validated::unwrap) {
-                    Ok(value) => Some(Arc::new(value)),
-                    Err(VulkanError::OutOfDate) => {
-                        // recreate swapchain
-                        None
-                    }
-                    Err(e) => {
-                        println!("Failed to flush future: {e}");
-                        None
-                    }
-                };
-
-                previous_fence_i = image_i;
+                _ => (),
             }
-            _ => (),
+        });
+    }
+
+    pub fn run_rt(self, parser: &Parser) {
+        let frames_in_flight = self.images.len();
+        let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
+        let mut previous_fence_i = 0;
+
+        let blas = self.create_blas(parser).unwrap();
+        let tlas = self.create_tlas(parser, blas.clone()).unwrap();
+
+        let descriptor_set = self.create_rt_descriptor_set(tlas);
+        let command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>> = self
+            .images
+            .iter()
+            .map(|swapchain_image| {
+                self.get_raytracing_command_buffers(
+                    parser,
+                    &descriptor_set.clone(),
+                    swapchain_image,
+                )
+            })
+            .collect();
+
+        unsafe {
+            self.device.wait_idle().unwrap();
+        }
+
+        let window = self.window.clone();
+        let _ = self.event_loop.run(move |event, elwt| {
+            let _ = &blas;
+
+            match event {
+                Event::WindowEvent {
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    elwt.exit();
+                }
+                Event::AboutToWait => {
+                    // Explicit redraw request creates clear frame boundaries for Nsight
+                    window.request_redraw();
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::RedrawRequested,
+                    ..
+                } => {
+                    let (image_i, _suboptimal, acquire_future) =
+                        match swapchain::acquire_next_image(self.swapchain.clone(), None)
+                            .map_err(Validated::unwrap)
+                        {
+                            Ok(r) => r,
+                            Err(VulkanError::OutOfDate) => {
+                                // Do something here
+                                // recereate swapchain
+                                return;
+                            }
+                            Err(e) => panic!("Failed to acquire next image! {e}"),
+                        };
+
+                    if let Some(image_fence) = &fences[image_i as usize] {
+                        image_fence.wait(None).unwrap();
+                    }
+
+                    let previous_future = match fences[previous_fence_i as usize].clone() {
+                        None => {
+                            let mut now = sync::now(self.device.clone());
+                            now.cleanup_finished();
+                            now.boxed()
+                        }
+                        Some(fence) => fence.boxed(),
+                    };
+
+                    let future = previous_future
+                        .join(acquire_future)
+                        .then_execute(
+                            self.queue.clone(),
+                            command_buffers[image_i as usize].clone(),
+                        )
+                        .unwrap()
+                        .then_swapchain_present(
+                            self.queue.clone(),
+                            SwapchainPresentInfo::swapchain_image_index(
+                                self.swapchain.clone(),
+                                image_i,
+                            ),
+                        )
+                        .then_signal_fence_and_flush();
+
+                    fences[image_i as usize] = match future.map_err(Validated::unwrap) {
+                        Ok(value) => Some(Arc::new(value)),
+                        Err(VulkanError::OutOfDate) => {
+                            // recreate swapchain
+                            None
+                        }
+                        Err(e) => {
+                            println!("Failed to flush future: {e}");
+                            None
+                        }
+                    };
+
+                    previous_fence_i = image_i;
+                }
+                _ => (),
+            }
         });
     }
 }

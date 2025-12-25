@@ -15,5 +15,5 @@ fn main() {
     }
 
     engine.create_buffers(&mut parser);
-    engine.run(&parser);
+    engine.run_rt(&parser);
 }
