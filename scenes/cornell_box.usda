@@ -1,0 +1,239 @@
+#usda 1.0
+(
+    defaultPrim = "root"
+    doc = "Blender v5.0.1"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "root" (
+    customData = {
+        dictionary Blender = {
+            bool generated = 1
+        }
+    }
+)
+{
+    def Xform "large_box"
+    {
+        custom string userProperties:blender:object_name = "large_box"
+        float3 xformOp:rotateXYZ = (90, 0.000011562057, 107.23437)
+        float3 xformOp:scale = (165.00002, 330, 165.00002)
+        double3 xformOp:translate = (-368.0000305175781, 351, 165.00003051757812)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Mesh "large_box" (
+            active = true
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform bool doubleSided = 1
+            float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+            int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+            int[] faceVertexIndices = [5, 0, 4, 6, 1, 5, 7, 2, 6, 4, 3, 7, 1, 3, 0, 6, 4, 7, 5, 1, 0, 6, 2, 1, 7, 3, 2, 4, 0, 3, 1, 2, 3, 6, 5, 4]
+            rel material:binding = </root/_materials/box_Material>
+            normal3f[] normals = [(-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+                interpolation = "faceVarying"
+            )
+            point3f[] points = [(-0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (0.5, -0.5, 0.5)]
+            uniform token subdivisionScheme = "none"
+            custom string userProperties:blender:data_name = "large_box"
+        }
+    }
+
+    def Scope "_materials"
+    {
+        def Material "box_Material"
+        {
+            token outputs:surface.connect = </root/_materials/box_Material/Diffuse_BSDF.outputs:surface>
+            custom string userProperties:blender:data_name = "box_Material"
+
+            def Shader "Diffuse_BSDF"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+                float inputs:roughness = 0
+                token outputs:surface
+            }
+        }
+
+        def Material "Emitter"
+        {
+            custom string userProperties:blender:data_name = "Emitter"
+        }
+
+        def Material "cbox_Material"
+        {
+            token outputs:surface.connect = </root/_materials/cbox_Material/Diffuse_BSDF.outputs:surface>
+            custom string userProperties:blender:data_name = "cbox_Material"
+
+            def Shader "Diffuse_BSDF"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.4, 0.4, 0.4)
+                float inputs:roughness = 0
+                token outputs:surface
+            }
+        }
+
+        def Material "cbox_red"
+        {
+            token outputs:surface.connect = </root/_materials/cbox_red/Diffuse_BSDF.outputs:surface>
+            custom string userProperties:blender:data_name = "cbox_red"
+
+            def Shader "Diffuse_BSDF"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0, 0)
+                float inputs:roughness = 0
+                token outputs:surface
+            }
+        }
+
+        def Material "cbox_green"
+        {
+            token outputs:surface.connect = </root/_materials/cbox_green/Diffuse_BSDF.outputs:surface>
+            custom string userProperties:blender:data_name = "cbox_green"
+
+            def Shader "Diffuse_BSDF"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 0.5, 0)
+                float inputs:roughness = 0
+                token outputs:surface
+            }
+        }
+    }
+
+    def Xform "small_box"
+    {
+        custom string userProperties:blender:object_name = "small_box"
+        float3 xformOp:rotateXYZ = (89.99999, -0.0000025904694, 163.38399)
+        float3 xformOp:scale = (82.50001, 82.50001, 82.50001)
+        double3 xformOp:translate = (-185.00001525878906, 169, 82.50001525878906)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Mesh "small_box" (
+            active = true
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform bool doubleSided = 1
+            float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+            int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+            int[] faceVertexIndices = [5, 0, 4, 6, 1, 5, 7, 2, 6, 4, 3, 7, 1, 3, 0, 6, 4, 7, 5, 1, 0, 6, 2, 1, 7, 3, 2, 4, 0, 3, 1, 2, 3, 6, 5, 4]
+            rel material:binding = </root/_materials/box_Material>
+            normal3f[] normals = [(-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+                interpolation = "faceVarying"
+            )
+            point3f[] points = [(-1, -1, -1), (-1, 1, -1), (1, 1, -1), (1, -1, -1), (-1, -1, 1), (-1, 1, 1), (1, 1, 1), (1, -1, 1)]
+            uniform token subdivisionScheme = "none"
+            custom string userProperties:blender:data_name = "small_box"
+        }
+    }
+
+    def Xform "Light"
+    {
+        custom string userProperties:blender:object_name = "Light"
+        float3 xformOp:rotateXYZ = (89.99999, -0, 179.99998)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-278, 279.5, 547.7999877929688)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Mesh "Light" (
+            active = true
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform bool doubleSided = 1
+            float3[] extent = [(-65.000015, 0, -52.5), (65, 0, 52.5)]
+            int[] faceVertexCounts = [3, 3]
+            int[] faceVertexIndices = [2, 1, 0, 2, 3, 1]
+            rel material:binding = </root/_materials/Emitter>
+            normal3f[] normals = [(0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0)] (
+                interpolation = "faceVarying"
+            )
+            point3f[] points = [(-65.000015, 0, -52.499985), (-65, 0, 52.5), (65, 0, -52.5), (65, 0, 52.5)]
+            uniform token subdivisionScheme = "none"
+            custom string userProperties:blender:data_name = "Light"
+        }
+    }
+
+    def Xform "cornell_box"
+    {
+        custom string userProperties:blender:object_name = "cornell_box"
+        float3 xformOp:rotateXYZ = (89.99999, -5.7574193e-13, -179.99998)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Mesh "cornell_box" (
+            active = true
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform bool doubleSided = 1
+            float3[] extent = [(0, 0, 0), (556, 548.8, 559.2)]
+            int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+            int[] faceVertexIndices = [0, 3, 2, 5, 7, 6, 5, 0, 2, 4, 2, 3, 6, 1, 0, 0, 1, 3, 5, 4, 7, 5, 6, 0, 4, 5, 2, 6, 7, 1]
+            rel material:binding = </root/_materials/cbox_Material>
+            normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0.99999994, 0, 0), (0.99999994, 0, 0), (0.99999994, 0, 0), (-0.99991566, 0.011661011, -0.0057219993), (-0.99991566, 0.011661011, -0.0057219993), (-0.99991566, 0.011661011, -0.0057219993), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0.99999994, 0, 0), (0.99999994, 0, 0), (0.99999994, 0, 0), (-0.999983, 0.0058307964, 0), (-0.999983, 0.0058307964, 0), (-0.999983, 0.0058307964, 0)] (
+                interpolation = "faceVarying"
+            )
+            point3f[] points = [(549.6, 0, 559.2), (552.8, 0, 0), (0, 0, 559.2), (0, 0, 0), (0, 548.8, 0), (0, 548.8, 559.2), (556, 548.8, 559.2), (556, 548.8, 0)]
+            uniform token subdivisionScheme = "none"
+            uniform token subsetFamily:materialBind:familyType = "nonOverlapping"
+            custom string userProperties:blender:data_name = "cornell_box"
+
+            def GeomSubset "cbox_Material" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                uniform token elementType = "face"
+                uniform token familyName = "materialBind"
+                int[] indices = [0, 1, 2, 5, 6, 7]
+                rel material:binding = </root/_materials/cbox_Material>
+            }
+
+            def GeomSubset "cbox_red" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                uniform token elementType = "face"
+                uniform token familyName = "materialBind"
+                int[] indices = [4, 9]
+                rel material:binding = </root/_materials/cbox_red>
+            }
+
+            def GeomSubset "cbox_green" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                uniform token elementType = "face"
+                uniform token familyName = "materialBind"
+                int[] indices = [3, 8]
+                rel material:binding = </root/_materials/cbox_green>
+            }
+        }
+    }
+
+    def Xform "Camera"
+    {
+        custom string userProperties:blender:object_name = "Camera"
+        float3 xformOp:rotateXYZ = (89.99999, -1.1514837e-12, 0.000017302844)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-277.99993896484375, -800, 273)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Camera "Camera"
+        {
+            float2 clippingRange = (0.1, 1500)
+            float focalLength = 450
+            float horizontalAperture = 320
+            token projection = "perspective"
+            custom string userProperties:blender:data_name = "Camera"
+            float verticalAperture = 320
+        }
+    }
+}
+

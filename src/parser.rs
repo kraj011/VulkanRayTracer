@@ -1,17 +1,18 @@
-use std::f32::EPSILON;
+use std::{collections::HashMap, f32::EPSILON};
 
 use anyhow::anyhow;
 use glam::{Mat4, Quat, Vec3};
 use openusd::{
-    sdf::{self, AbstractData},
-    usdc::{self},
+    sdf::{self, AbstractData, Path}, usda, usdc::{self}
 };
 
-use crate::{camera::Camera, mesh::Mesh, vertex::EngineVertex};
+use crate::{camera::Camera, material::Material, mesh::Mesh, vertex::EngineVertex};
 
 pub struct Parser {
     pub meshes: Vec<Mesh>,
     pub cameras: Vec<Camera>,
+    
+    material_map: HashMap<String, Material>,
 }
 
 impl Parser {
@@ -19,6 +20,7 @@ impl Parser {
         Parser {
             meshes: Vec::new(),
             cameras: Vec::new(),
+            material_map: HashMap::new()
         }
     }
 
@@ -39,6 +41,15 @@ impl Parser {
                 Err(x) => println!("{:?}", x),
                 _ => {}
             }
+        });
+
+
+        self.meshes.iter_mut().for_each(|mesh| {
+           if let Some(path) = &mesh.material_path {
+                if self.material_map.contains_key(path) {
+                    mesh.material = Some((*self.material_map.get(path).unwrap()).clone());
+                }
+           }
         });
 
         Ok(true)
@@ -92,16 +103,20 @@ impl Parser {
                 //     .try_as_token_vec()
                 //     .unwrap();
                 // dbg!(properties);
-                let mesh = self.parse_mesh(path, data, curr_xform)?;
+                let mesh = self.parse_mesh(path_obj, data, curr_xform)?;
                 self.meshes.push(mesh);
             }
             Some("Camera") => {
                 let camera = self.parse_camera(path, data, curr_xform)?;
                 self.cameras.push(camera);
             }
+            Some("Material") => {
+                let material = self.parse_material(path, data)?;
+                self.material_map.insert(path.to_string(), material);
+            }
             None => return Err(anyhow!("No type name found.")),
             _ => {
-                println!("{} {}", path, type_name.unwrap());
+                // println!("{} {}", path, type_name.unwrap());
             }
         }
 
@@ -199,12 +214,12 @@ impl Parser {
 
     fn parse_mesh(
         &mut self,
-        path: &str,
+        path: &Path,
         data: &mut Box<dyn AbstractData>,
         curr_xform: glam::Mat4,
     ) -> Result<Mesh, anyhow::Error> {
         // TODO: SUPPORT NON TRIANGULAR MESHES
-        let face_vertex_count_path = &sdf::path(&format!("{}.faceVertexCounts", path))?;
+        let face_vertex_count_path = path.append_property("faceVertexCounts")?;
         let face_vertex_counts: Vec<i32> = data
             .get(&face_vertex_count_path, "default")?
             .into_owned()
@@ -215,7 +230,7 @@ impl Parser {
             return Err(anyhow!("Non Triangular Mesh Found. {}", path));
         }
 
-        let indices_path = &sdf::path(&format!("{}.faceVertexIndices", path))?;
+        let indices_path = path.append_property("faceVertexIndices")?;
         let indices = data
             .get(&indices_path, "default")?
             .into_owned()
@@ -225,7 +240,7 @@ impl Parser {
             .map(|i| *i as u32)
             .collect();
 
-        let points_path = &sdf::path(&format!("{}.points", path))?;
+        let points_path = path.append_property("points")?;
         let vertices = data
             .get(&points_path, "default")?
             .into_owned()
@@ -237,12 +252,27 @@ impl Parser {
                 position: [chunk[0], chunk[1], chunk[2]],
             })
             .collect();
+        
+        let material_list_path = path.append_property("material:binding")?;
+       
+        
+        let mut material_path: Option<String> = None;
+        if let Some(material_list_option) = data
+        .get(&material_list_path, "targetPaths")?
+        .into_owned()
+        .try_as_path_list_op() {
+            if material_list_option.explicit_items.len() > 0 {
+                material_path = Some(material_list_option.explicit_items[0].to_string());
+            }
+        }
+            
 
         Ok(Mesh {
             vertices,
             indices,
             xform: curr_xform,
             name: path.to_string(),
+            material_path,
             ..Default::default()
         })
     }
@@ -282,6 +312,35 @@ impl Parser {
             height: 1080,
             sample_count: 1,
             xform: curr_xform,
+        })
+    }
+
+    fn parse_material(
+        &mut self,
+        path: &str,
+        data: &mut Box<dyn AbstractData>,
+    ) -> Result<Material, anyhow::Error> {
+        let surface_path = &sdf::path(&format!("{}.outputs:surface", path))?;
+
+        let connections = data.get(&surface_path, "connectionPaths")?.into_owned().try_as_path_list_op();
+
+        if connections.is_none() {
+            return Err(anyhow!("Material had no connections for {}", path));
+        }
+
+        let connection_paths = connections.unwrap();
+        if connection_paths.explicit_items.len() <= 0 {
+            return Err(anyhow!("Connection paths empty for {}", path));
+        }
+
+        let primary_connection_path = &connection_paths.explicit_items[0].prim_path();
+        let albedo_path = primary_connection_path.append_property("inputs:diffuseColor")?;
+
+        let albedo = data.get(&albedo_path, "default")?.into_owned().try_as_vec_3f().unwrap();
+
+        Ok(Material {
+            albedo: Vec3::new(albedo[0], albedo[1], albedo[2]),
+            name: path.to_string()
         })
     }
 }

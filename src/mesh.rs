@@ -7,7 +7,7 @@ use vulkano::{
     format::Format,
 };
 
-use crate::vertex::EngineVertex;
+use crate::{material::Material, vertex::EngineVertex};
 
 #[derive(Debug)]
 pub struct Mesh {
@@ -17,6 +17,9 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     pub xform: glam::Mat4,
     pub name: String,
+
+    pub material: Option<Material>,
+    pub material_path: Option<String>,
 
     // vulkan
     pub vertex_buffer: Option<Subbuffer<[EngineVertex]>>,
@@ -63,6 +66,9 @@ impl Default for Mesh {
             indices: Vec::new(),
             xform: glam::Mat4::IDENTITY,
             name: String::new(),
+
+            material: None,
+            material_path: None,
 
             vertex_buffer: None,
             index_buffer: None,

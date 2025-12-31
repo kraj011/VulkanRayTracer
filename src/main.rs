@@ -3,7 +3,7 @@ use ray_tracer::{engine::Engine, parser::Parser};
 fn main() {
     let engine = Engine::setup();
     let mut parser = Parser::new();
-    let success = parser.parse(&"C:\\Users\\haxan\\Desktop\\scenes\\cornell_box.usdc".to_string());
+    let success = parser.parse(&".\\scenes\\cornell_box.usdc".to_string());
 
     match success {
         Err(err) => panic!("{}", err),
@@ -14,6 +14,6 @@ fn main() {
         }
     }
 
-    engine.create_buffers(&mut parser);
-    engine.run_rt(&parser);
+    // engine.create_buffers(&mut parser);
+    // engine.run_rt(&parser);
 }

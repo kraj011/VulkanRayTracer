@@ -7,3 +7,4 @@ pub mod sampling;
 pub mod shaders;
 pub mod state;
 pub mod vertex;
+pub mod material;
