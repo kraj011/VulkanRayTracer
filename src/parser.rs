@@ -3,7 +3,9 @@ use std::{collections::HashMap, f32::EPSILON};
 use anyhow::anyhow;
 use glam::{Mat4, Quat, Vec3};
 use openusd::{
-    sdf::{self, AbstractData, Path}, usda, usdc::{self}
+    sdf::{self, AbstractData, Path},
+    usda,
+    usdc::{self},
 };
 
 use crate::{camera::Camera, material::Material, mesh::Mesh, vertex::EngineVertex};
@@ -11,7 +13,8 @@ use crate::{camera::Camera, material::Material, mesh::Mesh, vertex::EngineVertex
 pub struct Parser {
     pub meshes: Vec<Mesh>,
     pub cameras: Vec<Camera>,
-    
+    pub lights: Vec<Mesh>,
+
     material_map: HashMap<String, Material>,
 }
 
@@ -20,7 +23,8 @@ impl Parser {
         Parser {
             meshes: Vec::new(),
             cameras: Vec::new(),
-            material_map: HashMap::new()
+            lights: Vec::new(),
+            material_map: HashMap::new(),
         }
     }
 
@@ -43,13 +47,20 @@ impl Parser {
             }
         });
 
-
         self.meshes.iter_mut().for_each(|mesh| {
-           if let Some(path) = &mesh.material_path {
+            if let Some(path) = &mesh.material_path {
                 if self.material_map.contains_key(path) {
                     mesh.material = Some((*self.material_map.get(path).unwrap()).clone());
                 }
-           }
+            }
+        });
+
+        self.lights.iter_mut().for_each(|mesh| {
+            if let Some(path) = &mesh.material_path {
+                if self.material_map.contains_key(path) {
+                    mesh.material = Some((*self.material_map.get(path).unwrap()).clone());
+                }
+            }
         });
 
         Ok(true)
@@ -105,6 +116,10 @@ impl Parser {
                 // dbg!(properties);
                 let mesh = self.parse_mesh(path_obj, data, curr_xform)?;
                 self.meshes.push(mesh);
+            }
+            Some("Light") => {
+                let light = self.parse_mesh(path_obj, data, curr_xform)?;
+                self.lights.push(light);
             }
             Some("Camera") => {
                 let camera = self.parse_camera(path, data, curr_xform)?;
@@ -241,34 +256,50 @@ impl Parser {
             .collect();
 
         let points_path = path.append_property("points")?;
-        let vertices = data
+        let points_data: Vec<f32> = data
             .get(&points_path, "default")?
             .into_owned()
             .try_as_vec_3f_ref()
             .expect("Could not find points")
-            .to_vec()
-            .chunks(3)
-            .map(|chunk| EngineVertex {
-                position: [chunk[0], chunk[1], chunk[2]],
+            .to_vec();
+        let vertices: Vec<&[f32]> = points_data.chunks(3).collect();
+
+        let normals_path = path.append_property("normals")?;
+        let normals_data: Vec<f32> = data
+            .get(&normals_path, "default")?
+            .into_owned()
+            .try_as_vec_3f_ref()
+            .expect("Could not find normals")
+            .to_vec();
+        let normals: Vec<&[f32]> = normals_data.chunks(3).collect();
+
+        let engine_vertices = (0..vertices.len())
+            .map(|i| {
+                let point = vertices[i];
+                let normal = normals[i];
+
+                EngineVertex {
+                    position: [point[0], point[1], point[2]],
+                    normal: [normal[0], normal[1], normal[2]],
+                }
             })
             .collect();
-        
+
         let material_list_path = path.append_property("material:binding")?;
-       
-        
+
         let mut material_path: Option<String> = None;
         if let Some(material_list_option) = data
-        .get(&material_list_path, "targetPaths")?
-        .into_owned()
-        .try_as_path_list_op() {
+            .get(&material_list_path, "targetPaths")?
+            .into_owned()
+            .try_as_path_list_op()
+        {
             if material_list_option.explicit_items.len() > 0 {
                 material_path = Some(material_list_option.explicit_items[0].to_string());
             }
         }
-            
 
         Ok(Mesh {
-            vertices,
+            vertices: engine_vertices,
             indices,
             xform: curr_xform,
             name: path.to_string(),
@@ -322,7 +353,10 @@ impl Parser {
     ) -> Result<Material, anyhow::Error> {
         let surface_path = &sdf::path(&format!("{}.outputs:surface", path))?;
 
-        let connections = data.get(&surface_path, "connectionPaths")?.into_owned().try_as_path_list_op();
+        let connections = data
+            .get(&surface_path, "connectionPaths")?
+            .into_owned()
+            .try_as_path_list_op();
 
         if connections.is_none() {
             return Err(anyhow!("Material had no connections for {}", path));
@@ -335,12 +369,31 @@ impl Parser {
 
         let primary_connection_path = &connection_paths.explicit_items[0].prim_path();
         let albedo_path = primary_connection_path.append_property("inputs:diffuseColor")?;
+        let emission_path = primary_connection_path.append_property("inputs:emissiveColor")?;
 
-        let albedo = data.get(&albedo_path, "default")?.into_owned().try_as_vec_3f().unwrap();
+        let albedo = data
+            .get(&albedo_path, "default")?
+            .into_owned()
+            .try_as_vec_3f()
+            .unwrap();
+
+        let emission = vec_to_vec3_op(
+            data.get(&emission_path, "default")?
+                .into_owned()
+                .try_as_vec_3f(),
+        );
 
         Ok(Material {
             albedo: Vec3::new(albedo[0], albedo[1], albedo[2]),
-            name: path.to_string()
+            emission,
+            name: path.to_string(),
         })
+    }
+}
+
+fn vec_to_vec3_op(value: Option<Vec<f32>>) -> Option<Vec3> {
+    match value {
+        None => None,
+        Some(vec) => Some(Vec3::new(vec[0], vec[1], vec[2])),
     }
 }

@@ -14,6 +14,25 @@ def Xform "root" (
     }
 )
 {
+    def Xform "Camera"
+    {
+        custom string userProperties:blender:object_name = "Camera"
+        float3 xformOp:rotateXYZ = (89.99999, -1.1514837e-12, 0.000017302844)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-277.99993896484375, -800, 273)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Camera "Camera"
+        {
+            float2 clippingRange = (0.1, 1500)
+            float focalLength = 450
+            float horizontalAperture = 320
+            token projection = "perspective"
+            custom string userProperties:blender:data_name = "Camera"
+            float verticalAperture = 320
+        }
+    }
+
     def Xform "large_box"
     {
         custom string userProperties:blender:object_name = "large_box"
@@ -59,7 +78,23 @@ def Xform "root" (
 
         def Material "Emitter"
         {
+            token outputs:surface.connect = </root/_materials/Emitter/Principled_BSDF.outputs:surface>
             custom string userProperties:blender:data_name = "Emitter"
+
+            def Shader "Principled_BSDF"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                float inputs:clearcoat = 0
+                float inputs:clearcoatRoughness = 0.03
+                color3f inputs:diffuseColor = (0.8, 0.8, 0.8)
+                color3f inputs:emissiveColor = (100, 100, 100)
+                float inputs:ior = 1
+                float inputs:metallic = 0
+                float inputs:opacity = 1
+                float inputs:roughness = 0
+                float inputs:specular = 0.5
+                token outputs:surface
+            }
         }
 
         def Material "cbox_Material"
@@ -214,25 +249,6 @@ def Xform "root" (
                 int[] indices = [3, 8]
                 rel material:binding = </root/_materials/cbox_green>
             }
-        }
-    }
-
-    def Xform "Camera"
-    {
-        custom string userProperties:blender:object_name = "Camera"
-        float3 xformOp:rotateXYZ = (89.99999, -1.1514837e-12, 0.000017302844)
-        float3 xformOp:scale = (1, 1, 1)
-        double3 xformOp:translate = (-277.99993896484375, -800, 273)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
-
-        def Camera "Camera"
-        {
-            float2 clippingRange = (0.1, 1500)
-            float focalLength = 450
-            float horizontalAperture = 320
-            token projection = "perspective"
-            custom string userProperties:blender:data_name = "Camera"
-            float verticalAperture = 320
         }
     }
 }
