@@ -8,7 +8,7 @@ use vulkano::{
         AccelerationStructureGeometries, AccelerationStructureGeometryInstancesData,
         AccelerationStructureInstance, BuildAccelerationStructureFlags, GeometryInstanceFlags,
     },
-    buffer::{Buffer, BufferCreateInfo, BufferUsage},
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyImageInfo, PrimaryAutoCommandBuffer,
         RenderPassBeginInfo, SubpassBeginInfo, SubpassContents, SubpassEndInfo,
@@ -62,6 +62,15 @@ use crate::{
     state::State,
     vertex::EngineVertex,
 };
+
+#[repr(C)]
+#[derive(Clone, Copy, BufferContents)]
+pub struct GeometryBindings {
+    pub vertex_addr: u64,
+    pub index_addr: u64,
+    pub material_idx: u32,
+    pub _pad: u32,
+}
 
 pub struct Engine {
     state: State,
@@ -133,6 +142,7 @@ impl Engine {
             acceleration_structure: true,
             buffer_device_address: true,
             ray_tracing_pipeline: true,
+            shader_int64: true,
             ..Default::default()
         };
         let (device, mut queues) = Device::new(
@@ -663,7 +673,11 @@ impl Engine {
         Ok(tlas)
     }
 
-    fn create_rt_descriptor_set(&self, tlas: Arc<AccelerationStructure>) -> Arc<DescriptorSet> {
+    fn create_rt_descriptor_set(
+        &self,
+        tlas: Arc<AccelerationStructure>,
+        geometry_bindings_buffer: Subbuffer<[GeometryBindings]>,
+    ) -> Arc<DescriptorSet> {
         let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
             self.device.clone(),
             Default::default(),
@@ -675,6 +689,7 @@ impl Engine {
             [
                 WriteDescriptorSet::acceleration_structure(0, tlas.clone()),
                 WriteDescriptorSet::image_view(1, self.rt_storage_image_view.clone()),
+                WriteDescriptorSet::buffer(2, geometry_bindings_buffer),
             ],
             [],
         )
@@ -685,7 +700,6 @@ impl Engine {
         device: Arc<Device>,
         memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     ) -> Result<(Arc<RayTracingPipeline>, Arc<ShaderBindingTable>), anyhow::Error> {
-        // TODO: Come back here once shaders are written since Vulkano objects are created from shaders
         let raygen_shader = ray_gen_shader::load(device.clone())
             .unwrap()
             .entry_point("main")
@@ -801,6 +815,47 @@ impl Engine {
         builder.build().unwrap()
     }
 
+    fn create_geometry_bindings_buffer(&self, parser: &Parser) -> Subbuffer<[GeometryBindings]> {
+        let bindings: Vec<GeometryBindings> = parser
+            .meshes
+            .iter()
+            .map(|mesh| {
+                let vertex_addr = mesh
+                    .vertex_buffer
+                    .as_ref()
+                    .map(|b| b.buffer().device_address().unwrap().get())
+                    .unwrap_or(0);
+
+                let index_addr = match &mesh.index_buffer {
+                    Some(IndexBuffer::U32(b)) => b.buffer().device_address().unwrap().get(),
+                    _ => 0,
+                };
+
+                GeometryBindings {
+                    vertex_addr,
+                    index_addr,
+                    material_idx: 0,
+                    _pad: 0,
+                }
+            })
+            .collect();
+
+        Buffer::from_iter(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            bindings,
+        )
+        .unwrap()
+    }
+
     pub fn run_rasterization(self, parser: &Parser) {
         let frames_in_flight = self.images.len();
         let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
@@ -905,7 +960,9 @@ impl Engine {
         let blas = self.create_blas(parser).unwrap();
         let tlas = self.create_tlas(parser, blas.clone()).unwrap();
 
-        let descriptor_set = self.create_rt_descriptor_set(tlas);
+        let geometry_bindings_buffer = self.create_geometry_bindings_buffer(parser);
+
+        let descriptor_set = self.create_rt_descriptor_set(tlas, geometry_bindings_buffer);
         let command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>> = self
             .images
             .iter()

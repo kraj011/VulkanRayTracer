@@ -5,6 +5,13 @@ struct Vertex {
     vec3 normal;
 };
 
+struct GeometryBinding {
+    uint64_t vertexAddr;
+    uint64_t indexAddr;
+    uint materialIdx; 
+    uint _pad;
+};
+
 struct RayPayload {
     vec4 albedo_hit; // first 3 = albedo, 4th = hit
     vec3 emission;

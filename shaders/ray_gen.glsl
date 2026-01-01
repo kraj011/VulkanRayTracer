@@ -1,6 +1,8 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_shader_image_load_formatted : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
 
 #include "common.glsl"
 
@@ -33,28 +35,33 @@ void main() {
     vec3 throughput = vec3(1.0);
 
     uint seed = hash(gl_LaunchIDEXT.x * 1920);
+
+    payload.albedo_hit = vec4(0.0);
+
+    traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin.xyz, tmin, dir.xyz, tmax, 0);
     
-    for(int i = 0; i < MAX_BOUNCES; i++) {
-        payload.albedo_hit = vec4(0.0);
+    
+    // for(int i = 0; i < MAX_BOUNCES; i++) {
+    //     payload.albedo_hit = vec4(0.0);
 
-        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin.xyz, tmin, dir.xyz, tmax, 0);
+    //     traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin.xyz, tmin, dir.xyz, tmax, 0);
         
-        // no hit
-        if(payload.albedo_hit.w < 1e-3) break;
+    //     // no hit
+    //     if(payload.albedo_hit.w < 1e-3) break;
         
-        radiance += throughput * payload.emission;
+    //     radiance += throughput * payload.emission;
 
-        vec3 out_dir = normalize(randomCosineHemisphere(seed));
-        vec3 brdf = payload.albedo_hit.rgb * (1.0 / PI);
+    //     vec3 out_dir = normalize(randomCosineHemisphere(seed));
+    //     vec3 brdf = payload.albedo_hit.rgb * (1.0 / PI);
 
-        float pdf = max(0.0, dot(out_dir, payload.normal)) / PI;
-        throughput *= brdf * max(0.0, dot(payload.normal, out_dir)) / max(pdf, 1e-8);
+    //     float pdf = max(0.0, dot(out_dir, payload.normal)) / PI;
+    //     throughput *= brdf * max(0.0, dot(payload.normal, out_dir)) / max(pdf, 1e-8);
 
-        origin = vec4(payload.position, 1.0);
-        dir = vec4(out_dir, 0.0);
+    //     origin = vec4(payload.position, 1.0);
+    //     dir = vec4(out_dir, 0.0);
 
-        if(max(throughput.r, max(throughput.g, throughput.b)) < 1e-3) break;
-    }
+    //     if(max(throughput.r, max(throughput.g, throughput.b)) < 1e-3) break;
+    // }
 
-    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(radiance, 1.0));
+    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.albedo_hit.rgb, 1.0));
 }
