@@ -2,8 +2,13 @@
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_shader_image_load_formatted : enable
 
-layout(location = 0) rayPayloadInEXT vec4 payload;
+#include "common.glsl"
+
+layout(location = 0) rayPayloadInEXT RayPayload payload;
 
 void main() {
-    payload = vec4(0.2, 0.3, 0.5, 1.0);
+    payload.albedo_hit = vec4(0.0);
+    payload.emission = vec3(0.0);
+    payload.normal = vec3(0.0);
+    payload.position = vec3(0.0);
 }

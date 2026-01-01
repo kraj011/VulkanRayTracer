@@ -44,7 +44,8 @@ pub mod ray_gen_shader {
     vulkano_shaders::shader! {
         ty: "raygen",
         spirv_version: "1.4",
-        path: "./shaders/ray_gen.glsl"
+        path: "./shaders/ray_gen.glsl",
+        include: ["./shaders"]
     }
 }
 
@@ -53,7 +54,8 @@ pub mod closest_hit_shader {
     vulkano_shaders::shader! {
         ty: "closesthit",
         spirv_version: "1.4",
-        path: "./shaders/diffuse.glsl"
+        path: "./shaders/diffuse.glsl",
+        include: ["./shaders"]
     }
 }
 
@@ -61,6 +63,7 @@ pub mod miss_shader {
     vulkano_shaders::shader! {
         ty: "miss",
         spirv_version: "1.4",
-        path: "./shaders/ray_miss.glsl"
+        path: "./shaders/ray_miss.glsl",
+        include: ["./shaders"]
     }
 }

@@ -1,46 +1,35 @@
-use std::{any, sync::Arc};
+use std::sync::Arc;
 
-use image::{ImageBuffer, Rgba, imageops::FilterType::Triangle};
 use vulkano::{
-    Packed24_8, Validated, Version, VulkanError, VulkanLibrary,
+    Packed24_8, Validated, VulkanError, VulkanLibrary,
     acceleration_structure::{
         AccelerationStructure, AccelerationStructureBuildGeometryInfo,
         AccelerationStructureBuildRangeInfo, AccelerationStructureCreateInfo,
         AccelerationStructureGeometries, AccelerationStructureGeometryInstancesData,
-        AccelerationStructureGeometryTrianglesData, AccelerationStructureInstance,
-        BuildAccelerationStructureFlags, GeometryFlags, GeometryInstanceFlags,
+        AccelerationStructureInstance, BuildAccelerationStructureFlags, GeometryInstanceFlags,
     },
-    buffer::{Buffer, BufferCreateFlags, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer},
+    buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
-        AutoCommandBufferBuilder, ClearColorImageInfo, CommandBufferUsage, CopyBufferInfo,
-        CopyImageInfo, CopyImageToBufferInfo, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
-        SubpassBeginInfo, SubpassContents, SubpassEndInfo,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyImageInfo, PrimaryAutoCommandBuffer,
+        RenderPassBeginInfo, SubpassBeginInfo, SubpassContents, SubpassEndInfo,
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
     },
     descriptor_set::{
-        DescriptorSet, WriteDescriptorSet,
-        allocator::StandardDescriptorSetAllocator,
-        layout::{DescriptorBindingFlags, DescriptorSetLayoutBinding},
+        DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
     },
     device::{
         Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
-        QueueFlags,
-        physical::{PhysicalDevice, PhysicalDeviceGroupProperties},
+        QueueFlags, physical::PhysicalDevice,
     },
-    format::{ClearColorValue, Format},
     image::{Image, ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::{
-        ExternalMemoryHandleTypes,
-        allocator::{
-            AllocationCreateInfo, DeviceLayout, FreeListAllocator, GenericMemoryAllocator,
-            MemoryAllocator, MemoryTypeFilter, StandardMemoryAllocator,
-        },
+    memory::allocator::{
+        AllocationCreateInfo, FreeListAllocator, GenericMemoryAllocator, MemoryTypeFilter,
+        StandardMemoryAllocator,
     },
     pipeline::{
-        ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
         PipelineShaderStageCreateInfo,
-        compute::ComputePipelineCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
@@ -50,10 +39,10 @@ use vulkano::{
             vertex_input::{Vertex, VertexDefinition},
             viewport::{Viewport, ViewportState},
         },
-        layout::{PipelineDescriptorSetLayoutCreateInfo, PipelineLayoutCreateFlags},
+        layout::PipelineDescriptorSetLayoutCreateInfo,
         ray_tracing::{
             RayTracingPipeline, RayTracingPipelineCreateInfo, RayTracingShaderGroupCreateInfo,
-            ShaderBindingTable, ShaderGroupHandlesData,
+            ShaderBindingTable,
         },
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
@@ -63,7 +52,7 @@ use vulkano::{
 };
 use winit::{
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::EventLoop,
     window::{Window, WindowBuilder},
 };
 
@@ -71,7 +60,7 @@ use crate::{
     parser::Parser,
     shaders::{self, closest_hit_shader, miss_shader, ray_gen_shader},
     state::State,
-    vertex::{self, EngineVertex},
+    vertex::EngineVertex,
 };
 
 pub struct Engine {
