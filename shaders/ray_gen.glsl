@@ -12,6 +12,7 @@ layout(binding = 1, set = 0) uniform image2D image;
 layout(push_constant) uniform PushConstants {
     mat4 viewInv;
     mat4 projInv;
+    uint frameCount;
 } pc;
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
@@ -34,34 +35,32 @@ void main() {
     vec3 radiance = vec3(0.0);
     vec3 throughput = vec3(1.0);
 
-    uint seed = hash(gl_LaunchIDEXT.x * 1920);
-
-    payload.albedo_hit = vec4(0.0);
-
-    traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin.xyz, tmin, dir.xyz, tmax, 0);
+    uint seed = hash(gl_LaunchIDEXT.x * 1920 + gl_LaunchIDEXT.y + pc.frameCount * 94103);
     
-    
-    // for(int i = 0; i < MAX_BOUNCES; i++) {
-    //     payload.albedo_hit = vec4(0.0);
+    for(int i = 0; i < MAX_BOUNCES; i++) {
+        payload.albedo_hit = vec4(0.0);
 
-    //     traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin.xyz, tmin, dir.xyz, tmax, 0);
+        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin.xyz, tmin, dir.xyz, tmax, 0);
         
-    //     // no hit
-    //     if(payload.albedo_hit.w < 1e-3) break;
+        // no hit
+        if(payload.albedo_hit.w < 1e-3) break;
         
-    //     radiance += throughput * payload.emission;
+        radiance += throughput * payload.emission;
 
-    //     vec3 out_dir = normalize(randomCosineHemisphere(seed));
-    //     vec3 brdf = payload.albedo_hit.rgb * (1.0 / PI);
 
-    //     float pdf = max(0.0, dot(out_dir, payload.normal)) / PI;
-    //     throughput *= brdf * max(0.0, dot(payload.normal, out_dir)) / max(pdf, 1e-8);
+        vec3 out_dir = localONB(payload.normal, normalize(randomCosineHemisphere(seed)));
+        vec3 brdf = payload.albedo_hit.rgb * (1.0 / PI);
 
-    //     origin = vec4(payload.position, 1.0);
-    //     dir = vec4(out_dir, 0.0);
+        float pdf = max(0.0, dot(out_dir, payload.normal)) / PI;
+        throughput *= brdf * max(0.0, dot(out_dir, payload.normal)) / max(pdf, 1e-8);
 
-    //     if(max(throughput.r, max(throughput.g, throughput.b)) < 1e-3) break;
-    // }
+        origin = vec4(payload.position, 1.0);
+        dir = vec4(out_dir, 0.0);
 
-    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.albedo_hit.rgb, 1.0));
+        if(max(throughput.r, max(throughput.g, throughput.b)) < 1e-3) break;
+    }
+
+    vec4 prevPixel = imageLoad(image, ivec2(gl_LaunchIDEXT.xy));
+    vec3 newPixel = (prevPixel.rgb * (pc.frameCount - 1) / pc.frameCount) + (radiance / pc.frameCount);
+    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(newPixel, 1.0));
 }

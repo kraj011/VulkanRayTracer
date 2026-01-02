@@ -57,6 +57,7 @@ use winit::{
 };
 
 use crate::{
+    material::EngineMaterial,
     parser::Parser,
     shaders::{self, closest_hit_shader, miss_shader, ray_gen_shader},
     state::State,
@@ -73,7 +74,7 @@ pub struct GeometryBindings {
 }
 
 pub struct Engine {
-    state: State,
+    pub state: State,
 
     device: Arc<Device>,
     physical_device: Arc<PhysicalDevice>,
@@ -82,7 +83,6 @@ pub struct Engine {
     memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 
-    event_loop: EventLoop<()>,
     window: Arc<Window>,
     surface: Arc<Surface>,
     swapchain: Arc<Swapchain>,
@@ -98,9 +98,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn setup() -> Self {
-        let event_loop = EventLoop::new().unwrap();
-
+    pub fn new(event_loop: &EventLoop<()>) -> Self {
         let library = VulkanLibrary::new()
             .expect("Failed to initialize library. No local Vulkan library or DLL.");
         let required_exts = Surface::required_extensions(&event_loop).unwrap();
@@ -253,6 +251,7 @@ impl Engine {
 
         let state = State {
             recreate_swapchain: false,
+            frame_count: 0,
         };
 
         let (rt_pipeline, sbt) =
@@ -264,7 +263,7 @@ impl Engine {
                 image_type: ImageType::Dim2d,
                 format: swapchain.image_format(),
                 extent: [dimensions.width, dimensions.height, 1],
-                usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_SRC,
+                usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_SRC | ImageUsage::TRANSFER_DST,
                 ..Default::default()
             },
             AllocationCreateInfo {
@@ -274,9 +273,35 @@ impl Engine {
         )
         .unwrap();
 
+        // Transition storage image from Undefined to General layout (required for ray tracing)
+        {
+            let mut builder = AutoCommandBufferBuilder::primary(
+                command_buffer_allocator.clone(),
+                queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
+
+            builder
+                .clear_color_image(vulkano::command_buffer::ClearColorImageInfo::image(
+                    rt_storage_image.clone(),
+                ))
+                .unwrap();
+
+            let command_buffer = builder.build().unwrap();
+
+            sync::now(device.clone())
+                .then_execute(queue.clone(), command_buffer)
+                .unwrap()
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+        }
+
         let rt_storage_image_view = ImageView::new_default(rt_storage_image.clone()).unwrap();
 
-        return Engine {
+        Engine {
             state,
             device,
             physical_device,
@@ -285,7 +310,6 @@ impl Engine {
             memory_allocator,
             command_buffer_allocator,
 
-            event_loop,
             window,
             surface,
             swapchain,
@@ -298,7 +322,7 @@ impl Engine {
             sbt,
             rt_storage_image,
             rt_storage_image_view,
-        };
+        }
     }
 
     fn get_pipeline(
@@ -677,6 +701,7 @@ impl Engine {
         &self,
         tlas: Arc<AccelerationStructure>,
         geometry_bindings_buffer: Subbuffer<[GeometryBindings]>,
+        materials_buffer: Subbuffer<[EngineMaterial]>,
     ) -> Arc<DescriptorSet> {
         let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
             self.device.clone(),
@@ -690,6 +715,7 @@ impl Engine {
                 WriteDescriptorSet::acceleration_structure(0, tlas.clone()),
                 WriteDescriptorSet::image_view(1, self.rt_storage_image_view.clone()),
                 WriteDescriptorSet::buffer(2, geometry_bindings_buffer),
+                WriteDescriptorSet::buffer(3, materials_buffer),
             ],
             [],
         )
@@ -786,6 +812,7 @@ impl Engine {
                             .inverse()
                             .to_cols_array_2d(),
                         viewInv: parser.cameras[0].xform.to_cols_array_2d(),
+                        frameCount: self.state.frame_count,
                     },
                 )
                 .unwrap()
@@ -834,7 +861,10 @@ impl Engine {
                 GeometryBindings {
                     vertex_addr,
                     index_addr,
-                    material_idx: 0,
+                    material_idx: match &mesh.material_path {
+                        Some(path) => *parser.material_map.get(path).unwrap() as u32,
+                        None => 0, // TODO find a better default val
+                    },
                     _pad: 0,
                 }
             })
@@ -856,7 +886,30 @@ impl Engine {
         .unwrap()
     }
 
-    pub fn run_rasterization(self, parser: &Parser) {
+    pub fn create_materials_buffer(&self, parser: &Parser) -> Subbuffer<[EngineMaterial]> {
+        let materials: Vec<EngineMaterial> = parser
+            .materials
+            .iter()
+            .map(|material| material.engine_material)
+            .collect();
+
+        Buffer::from_iter(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            materials,
+        )
+        .unwrap()
+    }
+
+    pub fn run_rasterization(self, event_loop: EventLoop<()>, parser: &Parser) {
         let frames_in_flight = self.images.len();
         let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
         let mut previous_fence_i = 0;
@@ -872,7 +925,7 @@ impl Engine {
         }
 
         let window = self.window.clone();
-        let _ = self.event_loop.run(move |event, elwt| {
+        let _ = event_loop.run(move |event, elwt| {
             // Keep BLAS and TLAS alive for the lifetime of the app
             let _ = (&blas, &tlas);
 
@@ -952,7 +1005,7 @@ impl Engine {
         });
     }
 
-    pub fn run_rt(self, parser: &Parser) {
+    pub fn run_rt(mut self, event_loop: EventLoop<()>, parser: &Parser) {
         let frames_in_flight = self.images.len();
         let mut fences: Vec<Option<Arc<FenceSignalFuture<_>>>> = vec![None; frames_in_flight];
         let mut previous_fence_i = 0;
@@ -961,26 +1014,32 @@ impl Engine {
         let tlas = self.create_tlas(parser, blas.clone()).unwrap();
 
         let geometry_bindings_buffer = self.create_geometry_bindings_buffer(parser);
+        let materials_buffer = self.create_materials_buffer(parser);
 
-        let descriptor_set = self.create_rt_descriptor_set(tlas, geometry_bindings_buffer);
-        let command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>> = self
-            .images
-            .iter()
-            .map(|swapchain_image| {
-                self.get_raytracing_command_buffers(
-                    parser,
-                    &descriptor_set.clone(),
-                    swapchain_image,
-                )
-            })
-            .collect();
+        let descriptor_set =
+            self.create_rt_descriptor_set(tlas, geometry_bindings_buffer, materials_buffer);
 
         unsafe {
             self.device.wait_idle().unwrap();
         }
 
+        dbg!(&parser.meshes);
+
         let window = self.window.clone();
-        let _ = self.event_loop.run(move |event, elwt| {
+        let _ = event_loop.run(move |event, elwt| {
+            self.state.frame_count += 1;
+
+            let command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>> = self
+                .images
+                .iter()
+                .map(|swapchain_image| {
+                    self.get_raytracing_command_buffers(
+                        parser,
+                        &descriptor_set.clone(),
+                        swapchain_image,
+                    )
+                })
+                .collect();
             let _ = &blas;
 
             match event {

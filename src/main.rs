@@ -1,7 +1,10 @@
 use ray_tracer::{engine::Engine, parser::Parser};
+use winit::event_loop::EventLoop;
 
 fn main() {
-    let engine = Engine::setup();
+    let event_loop = EventLoop::new().unwrap();
+    let engine = Engine::new(&event_loop);
+
     let mut parser = Parser::new();
     let success = parser.parse(&".\\scenes\\cornell_box.usdc".to_string());
 
@@ -15,5 +18,5 @@ fn main() {
     }
 
     engine.create_buffers(&mut parser);
-    engine.run_rt(&parser);
+    engine.run_rt(event_loop, &parser);
 }

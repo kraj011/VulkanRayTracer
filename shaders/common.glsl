@@ -19,6 +19,11 @@ struct RayPayload {
     vec3 position;
 };
 
+struct DiffuseMaterial {
+    vec4 albedo;
+    vec4 emission;
+};
+
 // https://arugl.medium.com/hash-noise-in-gpu-shaders-210188ac3a3e
 float rand_from_seed(inout uint seed) {
  int k;
@@ -56,4 +61,13 @@ vec3 randomCosineHemisphere(inout uint seed) {
     float z = cosTheta;
 
     return vec3(x, y, z);
+}
+
+vec3 localONB(vec3 normal, vec3 new_dir) {
+    vec3 w = normalize(normal);
+    vec3 a = (abs(w.x) > 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 v = normalize(cross(w, a));
+    vec3 u = cross(w, v);
+
+    return new_dir.x * u + new_dir.y * v + new_dir.z * w;
 }

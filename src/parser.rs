@@ -1,21 +1,27 @@
-use std::{collections::HashMap, f32::EPSILON};
+use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 use glam::{Mat4, Quat, Vec3};
 use openusd::{
     sdf::{self, AbstractData, Path},
-    usda,
     usdc::{self},
 };
 
-use crate::{camera::Camera, material::Material, mesh::Mesh, vertex::EngineVertex};
+use crate::{
+    camera::Camera,
+    material::{EngineMaterial, Material},
+    mesh::Mesh,
+    vertex::EngineVertex,
+};
 
 pub struct Parser {
     pub meshes: Vec<Mesh>,
     pub cameras: Vec<Camera>,
     pub lights: Vec<Mesh>,
 
-    material_map: HashMap<String, Material>,
+    pub materials: Vec<Material>,
+
+    pub material_map: HashMap<String, usize>,
 }
 
 impl Parser {
@@ -24,6 +30,7 @@ impl Parser {
             meshes: Vec::new(),
             cameras: Vec::new(),
             lights: Vec::new(),
+            materials: Vec::new(),
             material_map: HashMap::new(),
         }
     }
@@ -50,7 +57,11 @@ impl Parser {
         self.meshes.iter_mut().for_each(|mesh| {
             if let Some(path) = &mesh.material_path {
                 if self.material_map.contains_key(path) {
-                    mesh.material = Some((*self.material_map.get(path).unwrap()).clone());
+                    let mat = self
+                        .materials
+                        .get((*self.material_map.get(path).unwrap()).clone())
+                        .unwrap();
+                    mesh.material = Some(mat.clone());
                 }
             }
         });
@@ -58,7 +69,11 @@ impl Parser {
         self.lights.iter_mut().for_each(|mesh| {
             if let Some(path) = &mesh.material_path {
                 if self.material_map.contains_key(path) {
-                    mesh.material = Some((*self.material_map.get(path).unwrap()).clone());
+                    let mat = self
+                        .materials
+                        .get((*self.material_map.get(path).unwrap()).clone())
+                        .unwrap();
+                    mesh.material = Some(mat.clone());
                 }
             }
         });
@@ -114,12 +129,12 @@ impl Parser {
                 //     .try_as_token_vec()
                 //     .unwrap();
                 // dbg!(properties);
-                let mesh = self.parse_mesh(path_obj, data, curr_xform)?;
-                self.meshes.push(mesh);
+                let meshes = self.parse_mesh(path_obj, data, curr_xform)?;
+                self.meshes.extend(meshes);
             }
             Some("Light") => {
-                let light = self.parse_mesh(path_obj, data, curr_xform)?;
-                self.lights.push(light);
+                let lights = self.parse_mesh(path_obj, data, curr_xform)?;
+                self.meshes.extend(lights);
             }
             Some("Camera") => {
                 let camera = self.parse_camera(path, data, curr_xform)?;
@@ -127,7 +142,9 @@ impl Parser {
             }
             Some("Material") => {
                 let material = self.parse_material(path, data)?;
-                self.material_map.insert(path.to_string(), material);
+                self.materials.push(material);
+                self.material_map
+                    .insert(path.to_string(), self.materials.len() - 1);
             }
             None => return Err(anyhow!("No type name found.")),
             _ => {
@@ -232,7 +249,7 @@ impl Parser {
         path: &Path,
         data: &mut Box<dyn AbstractData>,
         curr_xform: glam::Mat4,
-    ) -> Result<Mesh, anyhow::Error> {
+    ) -> Result<Vec<Mesh>, anyhow::Error> {
         // TODO: SUPPORT NON TRIANGULAR MESHES
         let face_vertex_count_path = path.append_property("faceVertexCounts")?;
         let face_vertex_counts: Vec<i32> = data
@@ -246,7 +263,7 @@ impl Parser {
         }
 
         let indices_path = path.append_property("faceVertexIndices")?;
-        let indices = data
+        let indices: Vec<u32> = data
             .get(&indices_path, "default")?
             .into_owned()
             .try_as_int_vec()
@@ -254,6 +271,8 @@ impl Parser {
             .iter()
             .map(|i| *i as u32)
             .collect();
+
+        let faces: Vec<&[u32]> = indices.chunks(3).collect();
 
         let points_path = path.append_property("points")?;
         let points_data: Vec<f32> = data
@@ -273,39 +292,136 @@ impl Parser {
             .to_vec();
         let normals: Vec<&[f32]> = normals_data.chunks(3).collect();
 
-        let engine_vertices = (0..vertices.len())
-            .map(|i| {
-                let point = vertices[i];
-                let normal = normals[i];
+        // To read full material information, need to iterate over each GeomSubset child that has material bindings
+        // If it doesnt have any, use current code
+        // if it does, do something like
 
-                EngineVertex {
-                    position: [point[0], point[1], point[2]],
-                    normal: [normal[0], normal[1], normal[2]],
-                }
-            })
-            .collect();
+        // for each geom subset that has material:binding
+        //   get face indices
+        //   get material name
+        //   split up mesh into just these faces and material
 
-        let material_list_path = path.append_property("material:binding")?;
+        let mut geom_subsets = Vec::new();
+        if data.has_field(path, "primChildren") {
+            let prim_children = data
+                .get(path, "primChildren")?
+                .into_owned()
+                .try_as_token_vec()
+                .unwrap();
+            geom_subsets = prim_children
+                .iter()
+                .map(|child_path| {
+                    let path_obj = path.append_path(child_path.clone()).unwrap();
+                    let type_obj = data.get(&path_obj, "typeName");
+                    if type_obj.is_err() {
+                        return None;
+                    }
+                    let token_ref = type_obj.unwrap().into_owned().try_as_token().unwrap();
+                    if token_ref == "GeomSubset" {
+                        return Some(path_obj);
+                    }
 
-        let mut material_path: Option<String> = None;
-        if let Some(material_list_option) = data
-            .get(&material_list_path, "targetPaths")?
-            .into_owned()
-            .try_as_path_list_op()
-        {
-            if material_list_option.explicit_items.len() > 0 {
-                material_path = Some(material_list_option.explicit_items[0].to_string());
-            }
+                    None
+                })
+                .filter_map(|option| option)
+                .collect();
         }
 
-        Ok(Mesh {
-            vertices: engine_vertices,
-            indices,
-            xform: curr_xform,
-            name: path.to_string(),
-            material_path,
-            ..Default::default()
-        })
+        if geom_subsets.len() > 0 {
+            Ok(geom_subsets
+                .iter()
+                .map(|subset_path| {
+                    let indices_path = subset_path.append_property("indices").unwrap();
+                    // indices of faces belonging to this material
+                    let face_indices = data
+                        .get(&indices_path, "default")
+                        .unwrap()
+                        .into_owned()
+                        .try_as_int_vec()
+                        .unwrap();
+
+                    // indices of the vertices per face
+                    let vert_indices: Vec<(&[u32], u32)> = face_indices
+                        .iter()
+                        .map(|face_idx| (faces[*face_idx as usize], (*face_idx * 3) as u32))
+                        .collect();
+
+                    let engine_vertices = vert_indices
+                        .iter()
+                        .flat_map(|(verts_pos, normal_i)| {
+                            verts_pos.iter().enumerate().map(|(j, vert_i)| {
+                                let vert_deref_i = *vert_i as usize;
+                                let normal_deref_i = *normal_i as usize;
+                                let point = vertices[vert_deref_i];
+                                let normal = normals[normal_deref_i + j];
+
+                                EngineVertex {
+                                    position: [point[0], point[1], point[2]],
+                                    normal: [normal[0], normal[1], normal[2]],
+                                }
+                            })
+                        })
+                        .collect();
+
+                    let material_list_path =
+                        subset_path.append_property("material:binding").unwrap();
+
+                    let material_path: String = data
+                        .get(&material_list_path, "targetPaths")
+                        .unwrap()
+                        .into_owned()
+                        .try_as_path_list_op()
+                        .unwrap()
+                        .explicit_items[0]
+                        .to_string();
+
+                    Mesh {
+                        vertices: engine_vertices,
+                        indices: (0..(vert_indices.len() as u32 * 3)).collect(),
+                        xform: curr_xform,
+                        name: path.to_string(),
+                        material_path: Some(material_path),
+                        ..Default::default()
+                    }
+                })
+                .collect())
+        } else {
+            // NOTE: ASSUMED FACE VARYING INTERPOLATION FOR NOW!
+            let engine_vertices = (0..indices.len())
+                .map(|i| {
+                    let idx = indices[i];
+                    let point = vertices[idx as usize];
+                    let normal = normals[i];
+
+                    EngineVertex {
+                        position: [point[0], point[1], point[2]],
+                        normal: [normal[0], normal[1], normal[2]],
+                    }
+                })
+                .collect();
+
+            let material_list_path = path.append_property("material:binding")?;
+
+            let mut material_path: Option<String> = None;
+            if let Some(material_list_option) = data
+                .get(&material_list_path, "targetPaths")?
+                .into_owned()
+                .try_as_path_list_op()
+            {
+                if material_list_option.explicit_items.len() > 0 {
+                    material_path = Some(material_list_option.explicit_items[0].to_string());
+                }
+            }
+
+            Ok(vec![Mesh {
+                vertices: engine_vertices,
+                indices: (0..(indices.len() as u32)).collect(),
+                xform: curr_xform,
+                name: path.to_string(),
+                material_path,
+                ..Default::default()
+            }])
+        }
     }
 
     fn parse_camera(
@@ -377,16 +493,23 @@ impl Parser {
             .try_as_vec_3f()
             .unwrap();
 
-        let emission = vec_to_vec3_op(
-            data.get(&emission_path, "default")?
-                .into_owned()
-                .try_as_vec_3f(),
-        );
+        let mut emission = None;
+        if data.has_spec(&emission_path) {
+            emission = vec_to_vec3_op(
+                data.get(&emission_path, "default")?
+                    .into_owned()
+                    .try_as_vec_3f(),
+            );
+        }
 
         Ok(Material {
             albedo: Vec3::new(albedo[0], albedo[1], albedo[2]),
             emission,
             name: path.to_string(),
+            engine_material: EngineMaterial {
+                albedo: [albedo[0], albedo[1], albedo[2], 0.0],
+                emission: emission.unwrap_or(Vec3::ZERO).extend(0.0).into(),
+            },
         })
     }
 }

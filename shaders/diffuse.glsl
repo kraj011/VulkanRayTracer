@@ -20,6 +20,10 @@ layout(binding = 2, set = 0, scalar) readonly buffer GeometryBindingsBuffer {
     GeometryBinding bindings[];
 } geometryBindings;
 
+layout(binding = 3, set = 0, std430) readonly buffer DiffuseBuffer {
+    DiffuseMaterial materials[];
+} diffuseMaterials;
+
 layout(location = 0) rayPayloadInEXT RayPayload payload;
 // https://www.gsn-lib.org/docs/nodes/raytracing.php#:~:text=The%20closest%2Dhit%20and%20miss,as%20possible%20for%20best%20performance.
 hitAttributeEXT vec2 baryCoord;
@@ -28,6 +32,8 @@ void main() {
     GeometryBinding binding = geometryBindings.bindings[gl_InstanceCustomIndexEXT];
     VertexBuffer vBuff = VertexBuffer(binding.vertexAddr);
     IndexBuffer iBuff = IndexBuffer(binding.indexAddr);
+
+    uint materialIdx = uint(binding.materialIdx);
 
     uint tri_0 = iBuff.idxs[gl_PrimitiveID * 3 + 0];
     uint tri_1 = iBuff.idxs[gl_PrimitiveID * 3 + 1];
@@ -41,10 +47,12 @@ void main() {
     vec3 shadingNormal = normalize(normal_0 * bary.x + normal_1 * bary.y + normal_2 * bary.z);
     shadingNormal = normalize(mat3(gl_ObjectToWorldEXT) * shadingNormal);
 
+    DiffuseMaterial material = diffuseMaterials.materials[materialIdx];
+
 
     vec3 hitPosWorld = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
-    payload.albedo_hit = vec4(shadingNormal * 0.5 + 0.5, 1.0);;
+    payload.albedo_hit = vec4(material.albedo.rgb, 1.0);
     payload.normal = shadingNormal;
-    payload.emission = vec3(1.0);
+    payload.emission = material.emission.rgb;
     payload.position = hitPosWorld;
 }
