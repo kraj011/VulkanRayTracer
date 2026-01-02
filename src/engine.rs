@@ -251,7 +251,7 @@ impl Engine {
 
         let state = State {
             recreate_swapchain: false,
-            frame_count: 0,
+            frame_count: 1,
         };
 
         let (rt_pipeline, sbt) =
@@ -1023,12 +1023,8 @@ impl Engine {
             self.device.wait_idle().unwrap();
         }
 
-        dbg!(&parser.meshes);
-
         let window = self.window.clone();
         let _ = event_loop.run(move |event, elwt| {
-            self.state.frame_count += 1;
-
             let command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>> = self
                 .images
                 .iter()
@@ -1057,6 +1053,8 @@ impl Engine {
                     event: WindowEvent::RedrawRequested,
                     ..
                 } => {
+                    self.state.frame_count += 1;
+
                     let (image_i, _suboptimal, acquire_future) =
                         match swapchain::acquire_next_image(self.swapchain.clone(), None)
                             .map_err(Validated::unwrap)
